@@ -30,6 +30,49 @@ const TG_MSG_MAX = 4000;
 // Session state lives outside the repo so re-deploys don't blow it away.
 const STATE_DIR = `${homedir()}/.argyle-tg-bot`;
 const SESSION_FILE = `${STATE_DIR}/session.json`;
+const STATE_FILE = `${STATE_DIR}/state.json`;
+
+// Locked-mode tool allowlist: pure read. Excludes anything that mutates host,
+// substrate, or external state. Memory writes (add_memories, delete_memories)
+// require /unlock so the substrate can't drift behind your back. TodoWrite is
+// in-context-only, no external side effects, kept for agent planning ergonomics.
+// Listed tools auto-approve; un-listed tools prompt and prompts deny in -p mode.
+const LOCKED_ALLOWED_TOOLS = [
+  'Read',
+  'Grep',
+  'Glob',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+  'TodoWrite',
+  'mcp__openmemory__search_memory',
+  'mcp__openmemory__list_memories',
+].join(',');
+
+// System prompt fragments appended per mode so Argyle knows what's active and
+// can self-enforce (read-only awareness in locked mode, lock-reminder in unlocked).
+const LOCKED_MODE_PROMPT = `
+
+--- Mode context (auto-injected by the bot harness, do not include in reply) ---
+You are currently in **🔒 LOCKED / read-only safe mode**.
+
+Available tools: Read, Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, openmemory **search and list only** (read-only memory access).
+Disabled tools: Bash, Edit, Write, NotebookEdit, openmemory **add/delete** (no memory writes either), anything that mutates the host or the substrate.
+
+If Shawn asks for an action that requires a disabled tool (run a command, edit a file, delete memory, push code, send a message, etc.), DO NOT try to use it. Reply with what you'd do and tell him to send \`/unlock\` first. Then he can re-send the original ask.
+
+Don't add any mode footer to your reply. The bot harness handles UI affordances; your job is just to respect the read-only boundary.`;
+
+const UNLOCKED_MODE_PROMPT = `
+
+--- Mode context (auto-injected by the bot harness, do not include in reply) ---
+You are currently in **🔓 UNLOCKED mode**. Full tools available: Bash, Edit, Write, openmemory full surface, the works. Use \`--dangerously-skip-permissions\`-equivalent agency on the host machine.
+
+**Always append this exact line as the LAST line of your reply** (after a blank line, no other formatting):
+
+🔓 still unlocked — \`/lock\` when done
+
+This is non-negotiable: every reply while unlocked ends with that line so Shawn doesn't forget to relock. If you skip it, the bot is less safe. If a destructive action is part of the task (rm, drop, send, push, force, money, public-post), name what you're about to do BEFORE doing it and pause for a confirmation if you're not sure.`;
 
 if (!TOKEN || !CHAT_ID) {
   console.error('ARGYLE_BOT_TOKEN and ARGYLE_BOT_CHAT_ID required in env. source ~/.exports');
@@ -66,6 +109,21 @@ function saveSession(id) {
 
 let currentSessionId = loadSession();
 
+function loadState() {
+  if (!existsSync(STATE_FILE)) return { unlocked: false };
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+  } catch {
+    return { unlocked: false };
+  }
+}
+
+function saveState(state) {
+  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+let currentState = loadState();
+
 // ---------------------------------------------------------------------------
 // Telegram helpers
 // ---------------------------------------------------------------------------
@@ -100,16 +158,21 @@ async function sendTyping() {
 // Claude subprocess
 // ---------------------------------------------------------------------------
 
-function spawnArgyle(input, sessionId) {
+function spawnArgyle(input, sessionId, unlocked) {
   return new Promise((resolveP, rejectP) => {
+    const fullPersona = PERSONA + (unlocked ? UNLOCKED_MODE_PROMPT : LOCKED_MODE_PROMPT);
     const args = [
       '-p',
       '--setting-sources', 'project,local',
-      '--dangerously-skip-permissions',
       '--mcp-config', MCP_CONFIG,
-      '--append-system-prompt', PERSONA,
+      '--append-system-prompt', fullPersona,
       '--output-format', 'json',
     ];
+    if (unlocked) {
+      args.push('--dangerously-skip-permissions');
+    } else {
+      args.push('--allowedTools', LOCKED_ALLOWED_TOOLS);
+    }
     if (sessionId) {
       args.push('--resume', sessionId);
     }
@@ -175,21 +238,52 @@ async function handleSlashCommand(text) {
       );
       return true;
     }
-    case '/session': {
+    case '/unlock': {
+      const wasUnlocked = currentState.unlocked;
+      currentState = { ...currentState, unlocked: true, unlocked_at: new Date().toISOString() };
+      saveState(currentState);
       await sendMessage(
-        currentSessionId
-          ? `Current session: ${currentSessionId}`
-          : 'No active session. Next message will start one.'
+        wasUnlocked
+          ? '🔓 Already unlocked. Send `/lock` when done with the current task.'
+          : '🔓 Unlocked. Full tools (Bash, Edit, Write, MCP writes) available on the next message.\n\nSend `/lock` or `/relock` to return to read-only safe mode.'
       );
+      return true;
+    }
+    case '/lock':
+    case '/relock': {
+      const wasUnlocked = currentState.unlocked;
+      currentState = { ...currentState, unlocked: false };
+      delete currentState.unlocked_at;
+      saveState(currentState);
+      await sendMessage(
+        wasUnlocked
+          ? '🔒 Locked. Read-only safe mode active. (Read, Grep, WebFetch, WebSearch, openmemory search/list/add — no Bash/Edit/Write.)'
+          : '🔒 Already locked. Read-only mode.'
+      );
+      return true;
+    }
+    case '/session':
+    case '/status': {
+      const sessionLine = currentSessionId
+        ? `Session: ${currentSessionId}`
+        : 'Session: none (next message starts one)';
+      const modeLine = currentState.unlocked
+        ? `Mode: 🔓 UNLOCKED (full tools, since ${currentState.unlocked_at || 'unknown'})`
+        : 'Mode: 🔒 LOCKED (read-only safe mode)';
+      await sendMessage(`${sessionLine}\n${modeLine}`);
       return true;
     }
     case '/help': {
       await sendMessage(
-        'Argyle bot commands:\n' +
-        '/reset or /new — start a fresh session (clears short-term context, Mem0 stays)\n' +
-        '/session — show current session id\n' +
-        '/help — this message\n\n' +
-        'Anything else: I respond as Argyle with full agency on the host machine.'
+        'Argyle bot commands:\n\n' +
+        '🔒 / 🔓  mode switcher\n' +
+        '/unlock — switch to full tools (Bash, Edit, Write, etc.). Replies will end with a "still unlocked — /lock when done" reminder.\n' +
+        '/lock or /relock — switch back to read-only safe mode.\n\n' +
+        '🧵  conversation\n' +
+        '/reset or /new — clear the Claude session, fresh thread (Mem0 stays).\n' +
+        '/session or /status — show current session id and mode.\n' +
+        '/help — this message.\n\n' +
+        'Default mode is locked. Read-only by design — anything that touches the host or substrate needs an /unlock first.'
       );
       return true;
     }
@@ -227,7 +321,7 @@ async function handleUpdate(update) {
     await sendTyping();
     let result;
     try {
-      result = await spawnArgyle(msg.text, currentSessionId);
+      result = await spawnArgyle(msg.text, currentSessionId, currentState.unlocked);
     } catch (e) {
       // If --resume failed because the session is stale or the JSONL was deleted,
       // retry with a fresh session. Heuristic: error mentions "session" or "resume".
@@ -236,7 +330,7 @@ async function handleUpdate(update) {
         console.warn(`resume failed for ${currentSessionId}, starting fresh: ${e.message}`);
         currentSessionId = null;
         saveSession(null);
-        result = await spawnArgyle(msg.text, null);
+        result = await spawnArgyle(msg.text, null, currentState.unlocked);
       } else {
         throw e;
       }
@@ -248,7 +342,8 @@ async function handleUpdate(update) {
     await sendMessage(result.reply || '(no reply)');
     console.log(
       `  -> sent ${result.reply.length} chars, session=${result.sessionId?.slice(0, 8)}, ` +
-      `turns=${result.turns}, cost=$${result.cost.toFixed(4)}`
+      `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
+      `mode=${currentState.unlocked ? 'unlocked' : 'locked'}`
     );
   } catch (e) {
     console.error('turn failed:', e.message);
@@ -261,7 +356,8 @@ async function handleUpdate(update) {
 async function pollLoop() {
   console.log(
     `argyle-tg-bot started, watching chat_id=${CHAT_ID}, ` +
-    `session=${currentSessionId ? currentSessionId.slice(0, 8) + '...' : '(none, will start fresh on first message)'}`
+    `session=${currentSessionId ? currentSessionId.slice(0, 8) + '...' : '(none, will start fresh on first message)'}, ` +
+    `mode=${currentState.unlocked ? 'UNLOCKED' : 'LOCKED'}`
   );
   while (true) {
     try {
