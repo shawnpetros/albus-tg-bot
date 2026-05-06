@@ -1,0 +1,16 @@
+{
+  "name": "argyle-tg-bot",
+  "version": "0.1.0",
+  "description": "Telegram surface for Argyle. Long-polls Telegram, spawns claude -p per message with OpenMemory MCP and Argyle persona.",
+  "type": "module",
+  "main": "bot.mjs",
+  "scripts": {
+    "start": "node bot.mjs",
+    "dev": "node --watch bot.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
