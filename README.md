@@ -10,8 +10,22 @@ Telegram surface for Argyle. Message `@argyle_cc_bot` on Telegram, get an Argyle
   - `--dangerously-skip-permissions` (full agent on the host machine)
   - `--mcp-config mcp-config.json` (only OpenMemory MCP, nothing else)
   - `--append-system-prompt persona.md` (Argyle voice + memory instructions)
-- Captures stdout, sends back via Telegram `sendMessage`. Splits at 4000 chars.
-- Stateless per-message. Mem0 is the only persistence.
+  - `--output-format json` (so the harness can parse `result` + `session_id`)
+  - `--resume <session_id>` when a previous session exists (continuity)
+- Captures stdout JSON, extracts `.result` for the reply, sends via Telegram `sendMessage`. Splits at 4000 chars.
+
+## Session continuity
+
+The bot persists the Claude session id to `~/.argyle-tg-bot/session.json` between turns. This survives daemon restarts (launchd respawn, machine reboot) — if the JSONL is still on disk, the session resumes.
+
+Two layers of memory:
+- **Short-term** = session continuity via `--resume`. Last several turns are in Claude's immediate context.
+- **Long-term** = Mem0 / OpenMemory MCP. Cross-session, cross-agent (Argyle, Penny, etc.).
+
+Slash commands:
+- `/reset` or `/new` — clear the session, next message starts a fresh thread (Mem0 unaffected).
+- `/session` — print current session id.
+- `/help` — list commands.
 
 ## Setup
 

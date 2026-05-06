@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shawnpetros.argyle-tg-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/shawnpetros/projects/argyle-tg-bot/launchd/run.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/shawnpetros/projects/argyle-tg-bot</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/shawnpetros</string>
+        <!-- ARGYLE_BOT_TOKEN, ARGYLE_BOT_CHAT_ID, ANTHROPIC_API_KEY come from
+             ~/.exports via run.sh wrapper. PER-31 contract: secrets in env only. -->
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart on crash. SuccessfulExit=false means we DON'T restart on
+             a clean exit (in case Shawn manually kills it). -->
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/shawnpetros/.argyle-tg-bot/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/shawnpetros/.argyle-tg-bot/stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
