@@ -9,5 +9,5 @@ if [[ -f "$HOME/.exports" ]]; then
   source "$HOME/.exports"
   set -u
 fi
-cd "$HOME/projects/argyle-tg-bot"
+cd "$HOME/projects/albus-tg-bot"
 exec /opt/homebrew/bin/node bot.mjs

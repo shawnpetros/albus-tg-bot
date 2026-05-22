@@ -1,6 +1,6 @@
-# argyle-tg-bot
+# albus-tg-bot
 
-Telegram surface for Argyle. Message `@argyle_cc_bot` on Telegram, get an Argyle reply with full Mem0 access.
+Telegram surface for Albus. Message `@argyle_cc_bot` on Telegram, get an Albus reply with full Mem0 access.
 
 ## What it is
 
@@ -9,18 +9,18 @@ Telegram surface for Argyle. Message `@argyle_cc_bot` on Telegram, get an Argyle
   - `--setting-sources project,local` (skip user-scope hooks/skills bloat)
   - `--dangerously-skip-permissions` (full agent on the host machine)
   - `--mcp-config mcp-config.json` (only OpenMemory MCP, nothing else)
-  - `--append-system-prompt persona.md` (Argyle voice + memory instructions)
+  - `--append-system-prompt persona.md` (Albus voice + memory instructions)
   - `--output-format json` (so the harness can parse `result` + `session_id`)
   - `--resume <session_id>` when a previous session exists (continuity)
 - Captures stdout JSON, extracts `.result` for the reply, sends via Telegram `sendMessage`. Splits at 4000 chars.
 
 ## Session continuity
 
-The bot persists the Claude session id to `~/.argyle-tg-bot/session.json` between turns. This survives daemon restarts (launchd respawn, machine reboot) — if the JSONL is still on disk, the session resumes.
+The bot persists the Claude session id to `~/.albus-tg-bot/session.json` between turns. This survives daemon restarts (launchd respawn, machine reboot) — if the JSONL is still on disk, the session resumes.
 
 Two layers of memory:
 - **Short-term** = session continuity via `--resume`. Last several turns are in Claude's immediate context.
-- **Long-term** = Mem0 / OpenMemory MCP. Cross-session, cross-agent (Argyle, Penny, etc.).
+- **Long-term** = Mem0 / OpenMemory MCP. Cross-session, cross-agent (Albus, Penny, etc.).
 
 Slash commands:
 - `/reset` or `/new` — clear the session, next message starts a fresh thread (Mem0 unaffected).
@@ -35,14 +35,14 @@ export ARGYLE_BOT_TOKEN=8644288223:...
 export ARGYLE_BOT_CHAT_ID=8442348137
 
 # Install (no deps; Node 18+ has native fetch):
-cd ~/projects/argyle-tg-bot
+cd ~/projects/albus-tg-bot
 node bot.mjs
 ```
 
 ## Files
 
 - `bot.mjs` — main loop
-- `persona.md` — Argyle persona injected via `--append-system-prompt`
+- `persona.md` — Albus persona injected via `--append-system-prompt`
 - `mcp-config.json` — OpenMemory MCP only
 - `package.json` — no deps, `npm start` and `npm run dev` shortcuts
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// argyle-tg-bot — Telegram surface for Argyle.
+// albus-tg-bot — Telegram surface for Albus.
 // Long-polls Telegram getUpdates, spawns `claude -p` per message with OpenMemory MCP
-// access and the Argyle persona, sends the response back.
+// access and the Albus persona, sends the response back.
 //
 // Session-continuous: captures `session_id` from each `claude -p --output-format json`
-// response, persists it to ~/.argyle-tg-bot/session.json, and passes --resume on
+// response, persists it to ~/.albus-tg-bot/session.json, and passes --resume on
 // subsequent calls so Claude itself remembers the conversation. Mem0 still serves
 // as the long-term cross-session substrate; the session_id is the short-term
 // thread-of-thought.
@@ -24,11 +24,11 @@ const CHAT_ID = process.env.ARGYLE_BOT_CHAT_ID;
 const PERSONA = readFileSync(resolve(HERE, 'persona.md'), 'utf8');
 const MCP_CONFIG = resolve(HERE, 'mcp-config.json');
 const TG_API = `https://api.telegram.org/bot${TOKEN}`;
-const TURN_TIMEOUT_MS = 5 * 60 * 1000;
+const TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const TG_MSG_MAX = 4000;
 
 // Session state lives outside the repo so re-deploys don't blow it away.
-const STATE_DIR = `${homedir()}/.argyle-tg-bot`;
+const STATE_DIR = `${homedir()}/.albus-tg-bot`;
 const SESSION_FILE = `${STATE_DIR}/session.json`;
 const STATE_FILE = `${STATE_DIR}/state.json`;
 
@@ -49,7 +49,7 @@ const LOCKED_ALLOWED_TOOLS = [
   'mcp__openmemory__list_memories',
 ].join(',');
 
-// System prompt fragments appended per mode so Argyle knows what's active and
+// System prompt fragments appended per mode so Albus knows what's active and
 // can self-enforce (read-only awareness in locked mode, lock-reminder in unlocked).
 const LOCKED_MODE_PROMPT = `
 
@@ -158,7 +158,7 @@ async function sendTyping() {
 // Claude subprocess
 // ---------------------------------------------------------------------------
 
-function spawnArgyle(input, sessionId, unlocked) {
+function spawnAlbus(input, sessionId, unlocked) {
   return new Promise((resolveP, rejectP) => {
     const fullPersona = PERSONA + (unlocked ? UNLOCKED_MODE_PROMPT : LOCKED_MODE_PROMPT);
     const args = [
@@ -275,7 +275,7 @@ async function handleSlashCommand(text) {
     }
     case '/help': {
       await sendMessage(
-        'Argyle bot commands:\n\n' +
+        'Albus bot commands:\n\n' +
         '🔒 / 🔓  mode switcher\n' +
         '/unlock — switch to full tools (Bash, Edit, Write, etc.). Replies will end with a "still unlocked — /lock when done" reminder.\n' +
         '/lock or /relock — switch back to read-only safe mode.\n\n' +
@@ -321,7 +321,7 @@ async function handleUpdate(update) {
     await sendTyping();
     let result;
     try {
-      result = await spawnArgyle(msg.text, currentSessionId, currentState.unlocked);
+      result = await spawnAlbus(msg.text, currentSessionId, currentState.unlocked);
     } catch (e) {
       // If --resume failed because the session is stale or the JSONL was deleted,
       // retry with a fresh session. Heuristic: error mentions "session" or "resume".
@@ -330,7 +330,7 @@ async function handleUpdate(update) {
         console.warn(`resume failed for ${currentSessionId}, starting fresh: ${e.message}`);
         currentSessionId = null;
         saveSession(null);
-        result = await spawnArgyle(msg.text, null, currentState.unlocked);
+        result = await spawnAlbus(msg.text, null, currentState.unlocked);
       } else {
         throw e;
       }
@@ -355,7 +355,7 @@ async function handleUpdate(update) {
 
 async function pollLoop() {
   console.log(
-    `argyle-tg-bot started, watching chat_id=${CHAT_ID}, ` +
+    `albus-tg-bot started, watching chat_id=${CHAT_ID}, ` +
     `session=${currentSessionId ? currentSessionId.slice(0, 8) + '...' : '(none, will start fresh on first message)'}, ` +
     `mode=${currentState.unlocked ? 'UNLOCKED' : 'LOCKED'}`
   );

@@ -9,6 +9,7 @@
 #
 # Source of truth for what's available is the slash-command switch in
 # bot.mjs. Keep this list in sync with that switch's canonical names.
+# Token env var is still ARGYLE_BOT_TOKEN (env vars unchanged in the rename).
 
 set -euo pipefail
 
