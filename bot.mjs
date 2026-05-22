@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOKEN = process.env.ARGYLE_BOT_TOKEN;
@@ -158,7 +159,49 @@ async function sendTyping() {
 // Claude subprocess
 // ---------------------------------------------------------------------------
 
-function spawnAlbus(input, sessionId, unlocked) {
+// Wizarding lexicon for tool calls. Each tool resolves to one emoji + one short
+// verb phrase, with the live args summarised. Bash uses Claude's own description
+// field where present (same source openclaw uses).
+function describeToolCall(name, args) {
+  const basename = (p) => (typeof p === 'string' && p ? p.split('/').pop() : '');
+  const clip = (s, n = 60) => (typeof s === 'string' ? s.slice(0, n) : '');
+  switch (name) {
+    case 'Bash':
+      return `🧪 brewing: ${clip(args.description || args.command)}`;
+    case 'Edit':
+      return `✍️ inscribing ${basename(args.file_path)}`;
+    case 'Write':
+      return `📜 scribing ${basename(args.file_path)}`;
+    case 'Read':
+      return `📖 perusing ${basename(args.file_path)}`;
+    case 'Grep':
+      return `🔍 scrying for "${clip(args.pattern)}"`;
+    case 'Glob':
+      return `🗺️ surveying "${clip(args.pattern)}"`;
+    case 'WebFetch': {
+      let host = '';
+      try { host = new URL(args.url).host; } catch { /* shrug */ }
+      return host ? `🦉 dispatching an owl to ${host}` : '🦉 dispatching an owl';
+    }
+    case 'WebSearch':
+      return `🔮 consulting the seeing-glass: "${clip(args.query)}"`;
+    case 'Task':
+      return `🪄 summoning: ${clip(args.description)}`;
+    case 'TodoWrite':
+      return `📋 charting ${(args.todos || []).length} todos`;
+    default:
+      if (name.startsWith('mcp__')) {
+        const frag = name.replace(/^mcp__/, '').replace(/__/g, ' ');
+        if (/add|save|write|create|set|update|delete/i.test(name)) {
+          return `💾 committing: ${frag}`;
+        }
+        return `🔭 inquiring: ${frag}`;
+      }
+      return `⚙️ casting ${name}`;
+  }
+}
+
+function spawnAlbus(input, sessionId, unlocked, onToolUse) {
   return new Promise((resolveP, rejectP) => {
     const fullPersona = PERSONA + (unlocked ? UNLOCKED_MODE_PROMPT : LOCKED_MODE_PROMPT);
     const args = [
@@ -166,7 +209,9 @@ function spawnAlbus(input, sessionId, unlocked) {
       '--setting-sources', 'project,local',
       '--mcp-config', MCP_CONFIG,
       '--append-system-prompt', fullPersona,
-      '--output-format', 'json',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
     ];
     if (unlocked) {
       args.push('--dangerously-skip-permissions');
@@ -178,16 +223,55 @@ function spawnAlbus(input, sessionId, unlocked) {
     }
 
     const child = spawn('claude', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
     let stderr = '';
+    let finalResult = null;
+    // Pending tool_use content blocks indexed by stream-event index. We accumulate
+    // input_json_delta chunks until content_block_stop fires, then JSON-parse and
+    // emit one onToolUse(name, args) call. Index resets per message_start.
+    const pendingTools = new Map();
+
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       rejectP(new Error(`turn timed out after ${TURN_TIMEOUT_MS / 1000}s`));
     }, TURN_TIMEOUT_MS);
 
-    child.stdout.on('data', (d) => {
-      stdout += d.toString();
+    const rl = createInterface({ input: child.stdout });
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      let evt;
+      try { evt = JSON.parse(line); } catch { return; }
+
+      if (evt.type === 'result') {
+        finalResult = evt;
+        return;
+      }
+      if (evt.type !== 'stream_event') return;
+      const inner = evt.event || {};
+      if (inner.type === 'message_start') {
+        pendingTools.clear();
+        return;
+      }
+      if (inner.type === 'content_block_start' && inner.content_block?.type === 'tool_use') {
+        pendingTools.set(inner.index, { name: inner.content_block.name, json: '' });
+        return;
+      }
+      if (inner.type === 'content_block_delta' && inner.delta?.type === 'input_json_delta') {
+        const p = pendingTools.get(inner.index);
+        if (p) p.json += inner.delta.partial_json || '';
+        return;
+      }
+      if (inner.type === 'content_block_stop') {
+        const p = pendingTools.get(inner.index);
+        if (!p) return;
+        pendingTools.delete(inner.index);
+        let parsedArgs = {};
+        try { parsedArgs = p.json ? JSON.parse(p.json) : {}; } catch { /* leave empty */ }
+        if (onToolUse) {
+          try { onToolUse(p.name, parsedArgs); } catch (e) { console.warn('onToolUse threw:', e.message); }
+        }
+      }
     });
+
     child.stderr.on('data', (d) => {
       stderr += d.toString();
     });
@@ -201,18 +285,16 @@ function spawnAlbus(input, sessionId, unlocked) {
         rejectP(new Error(`claude exited ${code}: ${stderr.slice(-500) || 'no stderr'}`));
         return;
       }
-      // --output-format json returns one JSON object on stdout.
-      try {
-        const parsed = JSON.parse(stdout.trim());
-        resolveP({
-          reply: parsed.result || '',
-          sessionId: parsed.session_id || null,
-          cost: parsed.total_cost_usd || 0,
-          turns: parsed.num_turns || 0,
-        });
-      } catch (e) {
-        rejectP(new Error(`failed to parse claude json: ${e.message}; stdout head: ${stdout.slice(0, 300)}`));
+      if (!finalResult) {
+        rejectP(new Error(`no result event in stream; stderr tail: ${stderr.slice(-300) || '(empty)'}`));
+        return;
       }
+      resolveP({
+        reply: finalResult.result || '',
+        sessionId: finalResult.session_id || null,
+        cost: finalResult.total_cost_usd || 0,
+        turns: finalResult.num_turns || 0,
+      });
     });
 
     child.stdin.write(input);
@@ -317,17 +399,91 @@ async function handleUpdate(update) {
     return;
   }
   busy = true;
-  // Telegram chatAction (typing...) expires ~5s after each send. For multi-minute
-  // turns the user otherwise sees silence. Refresh every 4s while the child is alive.
+  // Telegram chatAction (typing...) expires ~5s after each send. For the gap
+  // before the first tool fires (and pure-text turns) we refresh it every 4s.
+  // Once the scratchpad opens, edits subsume the activity signal but typing is
+  // harmless on top of edits.
   const turnStartedAt = Date.now();
   await sendTyping();
-  const typingTimer = setInterval(() => {
-    sendTyping();
-  }, 4000);
+  const typingTimer = setInterval(() => { sendTyping(); }, 4000);
+
+  // Scratchpad state: a single message we open on the first tool call, append a
+  // wizarding-flavoured line per tool, debounce-edit, and delete on result.
+  // Pure-text turns never open a scratchpad.
+  let scratchpadMessageId = null;
+  const scratchpadLines = [];
+  let scratchpadEditTimer = null;
+  let scratchpadEditInFlight = false;
+  let scratchpadDirty = false;
+
+  const flushScratchpadEdit = async () => {
+    if (!scratchpadMessageId || !scratchpadDirty || scratchpadEditInFlight) return;
+    scratchpadEditInFlight = true;
+    scratchpadDirty = false;
+    // Cap at 20 lines visible, 3800 chars so we stay under Telegram's 4096 ceiling.
+    const text = scratchpadLines.slice(-20).join('\n').slice(0, 3800);
+    try {
+      await tg('editMessageText', {
+        chat_id: Number(CHAT_ID),
+        message_id: scratchpadMessageId,
+        text,
+      });
+    } catch (e) {
+      console.warn('scratchpad edit failed:', e.message);
+    } finally {
+      scratchpadEditInFlight = false;
+      // If more lines arrived during the in-flight edit, schedule a follow-up.
+      if (scratchpadDirty) scheduleScratchpadEdit();
+    }
+  };
+
+  const scheduleScratchpadEdit = () => {
+    if (scratchpadEditTimer) return;
+    scratchpadEditTimer = setTimeout(() => {
+      scratchpadEditTimer = null;
+      flushScratchpadEdit();
+    }, 1500);
+  };
+
+  const closeScratchpad = async () => {
+    if (scratchpadEditTimer) { clearTimeout(scratchpadEditTimer); scratchpadEditTimer = null; }
+    if (!scratchpadMessageId) return;
+    const id = scratchpadMessageId;
+    scratchpadMessageId = null;
+    try {
+      await tg('deleteMessage', { chat_id: Number(CHAT_ID), message_id: id });
+    } catch (e) {
+      console.warn('scratchpad delete failed:', e.message);
+    }
+  };
+
+  const onToolUse = (name, args) => {
+    scratchpadLines.push(describeToolCall(name, args));
+    scratchpadDirty = true;
+    if (!scratchpadMessageId) {
+      // Open lazily on first tool use. Fire-and-forget; the next debounced edit
+      // will populate it. Don't await here, we're in a hot callback.
+      (async () => {
+        try {
+          const sent = await tg('sendMessage', {
+            chat_id: Number(CHAT_ID),
+            text: '🪄 working...',
+          });
+          scratchpadMessageId = sent.message_id;
+          scheduleScratchpadEdit();
+        } catch (e) {
+          console.warn('scratchpad open failed:', e.message);
+        }
+      })();
+    } else {
+      scheduleScratchpadEdit();
+    }
+  };
+
   try {
     let result;
     try {
-      result = await spawnAlbus(msg.text, currentSessionId, currentState.unlocked);
+      result = await spawnAlbus(msg.text, currentSessionId, currentState.unlocked, onToolUse);
     } catch (e) {
       // If --resume failed because the session is stale or the JSONL was deleted,
       // retry with a fresh session. Heuristic: error mentions "session" or "resume".
@@ -336,7 +492,7 @@ async function handleUpdate(update) {
         console.warn(`resume failed for ${currentSessionId}, starting fresh: ${e.message}`);
         currentSessionId = null;
         saveSession(null);
-        result = await spawnAlbus(msg.text, null, currentState.unlocked);
+        result = await spawnAlbus(msg.text, null, currentState.unlocked, onToolUse);
       } else {
         throw e;
       }
@@ -345,16 +501,26 @@ async function handleUpdate(update) {
       currentSessionId = result.sessionId;
       saveSession(currentSessionId);
     }
+    await closeScratchpad();
     await sendMessage(result.reply || '(no reply)');
     const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
     console.log(
       `  -> sent ${result.reply.length} chars, session=${result.sessionId?.slice(0, 8)}, ` +
       `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
-      `mode=${currentState.unlocked ? 'unlocked' : 'locked'}, elapsed=${elapsedS}s`
+      `mode=${currentState.unlocked ? 'unlocked' : 'locked'}, ` +
+      `tools=${scratchpadLines.length}, elapsed=${elapsedS}s`
     );
   } catch (e) {
     console.error('turn failed:', e.message);
-    await sendMessage(`bot error: ${e.message}`);
+    // Leave the scratchpad visible on failure (with a fizzled tag) so diagnostics
+    // survive. Edit in place if it was opened.
+    if (scratchpadMessageId) {
+      scratchpadLines.push(`💥 spell fizzled: ${e.message.slice(0, 200)}`);
+      scratchpadDirty = true;
+      await flushScratchpadEdit();
+    } else {
+      await sendMessage(`bot error: ${e.message}`);
+    }
   } finally {
     clearInterval(typingTimer);
     busy = false;
