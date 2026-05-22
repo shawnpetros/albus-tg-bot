@@ -317,8 +317,14 @@ async function handleUpdate(update) {
     return;
   }
   busy = true;
+  // Telegram chatAction (typing...) expires ~5s after each send. For multi-minute
+  // turns the user otherwise sees silence. Refresh every 4s while the child is alive.
+  const turnStartedAt = Date.now();
+  await sendTyping();
+  const typingTimer = setInterval(() => {
+    sendTyping();
+  }, 4000);
   try {
-    await sendTyping();
     let result;
     try {
       result = await spawnAlbus(msg.text, currentSessionId, currentState.unlocked);
@@ -340,15 +346,17 @@ async function handleUpdate(update) {
       saveSession(currentSessionId);
     }
     await sendMessage(result.reply || '(no reply)');
+    const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
     console.log(
       `  -> sent ${result.reply.length} chars, session=${result.sessionId?.slice(0, 8)}, ` +
       `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
-      `mode=${currentState.unlocked ? 'unlocked' : 'locked'}`
+      `mode=${currentState.unlocked ? 'unlocked' : 'locked'}, elapsed=${elapsedS}s`
     );
   } catch (e) {
     console.error('turn failed:', e.message);
     await sendMessage(`bot error: ${e.message}`);
   } finally {
+    clearInterval(typingTimer);
     busy = false;
   }
 }
