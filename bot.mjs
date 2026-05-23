@@ -9,7 +9,7 @@
 // as the long-term cross-session substrate; the session_id is the short-term
 // thread-of-thought.
 //
-// Authorized for a single chat_id (env: ARGYLE_BOT_CHAT_ID).
+// Authorized for a single chat_id (env: ALBUS_BOT_CHAT_ID).
 // Slash commands: /reset (start a fresh session), /session (show current id).
 
 import { spawn } from 'node:child_process';
@@ -20,8 +20,8 @@ import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const TOKEN = process.env.ARGYLE_BOT_TOKEN;
-const CHAT_ID = process.env.ARGYLE_BOT_CHAT_ID;
+const TOKEN = process.env.ALBUS_BOT_TOKEN;
+const CHAT_ID = process.env.ALBUS_BOT_CHAT_ID;
 const PERSONA = readFileSync(resolve(HERE, 'persona.md'), 'utf8');
 const MCP_CONFIG = resolve(HERE, 'mcp-config.json');
 const TG_API = `https://api.telegram.org/bot${TOKEN}`;
@@ -76,7 +76,7 @@ You are currently in **🔓 UNLOCKED mode**. Full tools available: Bash, Edit, W
 This is non-negotiable: every reply while unlocked ends with that line so Shawn doesn't forget to relock. If you skip it, the bot is less safe. If a destructive action is part of the task (rm, drop, send, push, force, money, public-post), name what you're about to do BEFORE doing it and pause for a confirmation if you're not sure.`;
 
 if (!TOKEN || !CHAT_ID) {
-  console.error('ARGYLE_BOT_TOKEN and ARGYLE_BOT_CHAT_ID required in env. source ~/.exports');
+  console.error('ALBUS_BOT_TOKEN and ALBUS_BOT_CHAT_ID required in env. source ~/.exports');
   process.exit(1);
 }
 
