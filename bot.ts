@@ -22,12 +22,33 @@ import {
   readdirSync,
   rmSync,
 } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 
 import { formatForTelegram } from "./lib/format.ts";
+import {
+  TOKEN,
+  CHAT_ID,
+  PERSONA_PATH,
+  MCP_CONFIG,
+  TG_API,
+  TURN_TIMEOUT_MS,
+  TG_MSG_MAX,
+  STATE_DIR,
+  SESSION_FILE,
+  STATE_FILE,
+  PHOTOS_DIR,
+  OUTBOX_DIR,
+  LOCKED_ALLOWED_TOOLS,
+  LOCKED_MODE_PROMPT,
+  UNLOCKED_MODE_PROMPT,
+} from "./lib/config.ts";
+import {
+  loadSession as loadSessionFromFile,
+  saveSession as saveSessionToFile,
+  loadState as loadStateFromFile,
+  saveState as saveStateToFile,
+  type BotState,
+} from "./lib/state.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,17 +96,6 @@ interface TgResponse<T = unknown> {
   description?: string;
 }
 
-interface SessionState {
-  session_id: string | null;
-  updated_at?: string;
-  reset_at?: string;
-}
-
-interface BotState {
-  unlocked: boolean;
-  unlocked_at?: string;
-}
-
 interface ClaudeTurnResult {
   reply: string;
   sessionId: string | null;
@@ -101,64 +111,9 @@ interface MediaAttachment {
   label: string;
 }
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const TOKEN = process.env.ALBUS_BOT_TOKEN;
-const CHAT_ID = process.env.ALBUS_BOT_CHAT_ID;
-const PERSONA = readFileSync(resolve(HERE, "persona.md"), "utf8");
-const MCP_CONFIG = resolve(HERE, "mcp-config.json");
-const TG_API = `https://api.telegram.org/bot${TOKEN}`;
-const TURN_TIMEOUT_MS = 10 * 60 * 1000;
-const TG_MSG_MAX = 4000;
-
-const STATE_DIR = `${homedir()}/.albus-tg-bot`;
-const SESSION_FILE = `${STATE_DIR}/session.json`;
-const STATE_FILE = `${STATE_DIR}/state.json`;
-const PHOTOS_DIR = `${STATE_DIR}/photos`;
-const OUTBOX_DIR = `${STATE_DIR}/outbox`;
-
-const LOCKED_ALLOWED_TOOLS = [
-  "Read",
-  "Grep",
-  "Glob",
-  "WebFetch",
-  "WebSearch",
-  "Task",
-  "TodoWrite",
-  "mcp__openmemory__search_memory",
-  "mcp__openmemory__list_memories",
-].join(",");
-
-const LOCKED_MODE_PROMPT = `
-
---- Mode context (auto-injected by the bot harness, do not include in reply) ---
-You are currently in **🔒 LOCKED / read-only safe mode**.
-
-Available tools: Read, Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, openmemory **search and list only** (read-only memory access).
-Disabled tools: Bash, Edit, Write, NotebookEdit, openmemory **add/delete** (no memory writes either), anything that mutates the host or the substrate.
-
-If Shawn asks for an action that requires a disabled tool (run a command, edit a file, delete memory, push code, send a message, etc.), DO NOT try to use it. Reply with what you'd do and tell him to send \`/unlock\` first. Then he can re-send the original ask.
-
-Don't add any mode footer to your reply. The bot harness handles UI affordances; your job is just to respect the read-only boundary.`;
-
-const UNLOCKED_MODE_PROMPT = `
-
---- Mode context (auto-injected by the bot harness, do not include in reply) ---
-You are currently in **🔓 UNLOCKED mode**. Full tools available: Bash, Edit, Write, openmemory full surface, the works. Use \`--dangerously-skip-permissions\`-equivalent agency on the host machine.
-
-**Always append this exact line as the LAST line of your reply** (after a blank line, no other formatting):
-
-🔓 still unlocked - \`/lock\` when done
-
-This is non-negotiable: every reply while unlocked ends with that line so Shawn doesn't forget to relock. If you skip it, the bot is less safe. If a destructive action is part of the task (rm, drop, send, push, force, money, public-post), name what you're about to do BEFORE doing it and pause for a confirmation if you're not sure.`;
-
-if (!TOKEN || !CHAT_ID) {
-  console.error("ALBUS_BOT_TOKEN and ALBUS_BOT_CHAT_ID required in env. source ~/.exports");
-  process.exit(1);
-}
+// Config + state paths come from ./lib/config.ts. Persona body is loaded once
+// here because it's small and the file path is stable.
+const PERSONA = readFileSync(PERSONA_PATH, "utf8");
 
 mkdirSync(STATE_DIR, { recursive: true });
 mkdirSync(PHOTOS_DIR, { recursive: true });
@@ -168,48 +123,15 @@ let offset = 0;
 let busy = false;
 
 // ---------------------------------------------------------------------------
-// Session + state persistence
+// Session + state persistence (lib/state.ts wraps file I/O; we bind file paths)
 // ---------------------------------------------------------------------------
 
-function loadSession(): string | null {
-  if (!existsSync(SESSION_FILE)) return null;
-  try {
-    const data = JSON.parse(readFileSync(SESSION_FILE, "utf8")) as SessionState;
-    return data.session_id || null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSession(id: string | null): void {
-  if (id === null) {
-    writeFileSync(
-      SESSION_FILE,
-      JSON.stringify({ session_id: null, reset_at: new Date().toISOString() }, null, 2)
-    );
-    return;
-  }
-  writeFileSync(
-    SESSION_FILE,
-    JSON.stringify({ session_id: id, updated_at: new Date().toISOString() }, null, 2)
-  );
-}
+const loadSession = (): string | null => loadSessionFromFile(SESSION_FILE);
+const saveSession = (id: string | null): void => saveSessionToFile(SESSION_FILE, id);
+const loadState = (): BotState => loadStateFromFile(STATE_FILE);
+const saveState = (state: BotState): void => saveStateToFile(STATE_FILE, state);
 
 let currentSessionId: string | null = loadSession();
-
-function loadState(): BotState {
-  if (!existsSync(STATE_FILE)) return { unlocked: false };
-  try {
-    return JSON.parse(readFileSync(STATE_FILE, "utf8")) as BotState;
-  } catch {
-    return { unlocked: false };
-  }
-}
-
-function saveState(state: BotState): void {
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
-
 let currentState: BotState = loadState();
 
 // ---------------------------------------------------------------------------
