@@ -10,4 +10,6 @@ if [[ -f "$HOME/.exports" ]]; then
   set -u
 fi
 cd "$HOME/projects/albus-tg-bot"
-exec /opt/homebrew/bin/node bot.mjs
+# Bun runs TypeScript natively; bot.ts is the entry point that loads
+# persona, ensures state dirs, and starts the poll loop in lib/poll.ts.
+exec /opt/homebrew/bin/bun run bot.ts

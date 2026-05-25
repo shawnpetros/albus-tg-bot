@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Telegram surface for Albus. Long-polls Telegram, spawns claude -p per message with OpenMemory MCP and Albus persona.",
   "type": "module",
-  "main": "bot.mjs",
+  "main": "bot.ts",
   "scripts": {
     "start": "bun run bot.ts",
     "start:legacy": "node bot.mjs",
