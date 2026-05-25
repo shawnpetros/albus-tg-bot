@@ -36,6 +36,11 @@ export const STATE_FILE = `${STATE_DIR}/state.json`;
 export const PHOTOS_DIR = `${STATE_DIR}/photos`;
 export const OUTBOX_DIR = `${STATE_DIR}/outbox`;
 
+// Heartbeat for the watchdog. Bot writes this file on every poll round-trip;
+// the watchdog launchd job restarts the bot if mtime exceeds HEARTBEAT_STALE_SECS.
+export const HEARTBEAT_FILE = `${STATE_DIR}/heartbeat`;
+export const HEARTBEAT_STALE_SECS = 90;
+
 // Locked-mode tool allowlist: pure read. Excludes anything that mutates host,
 // substrate, or external state. Memory writes (add_memories, delete_memories)
 // require /unlock so the substrate can't drift behind your back. TodoWrite is

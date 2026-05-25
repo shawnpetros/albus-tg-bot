@@ -7,11 +7,13 @@
 import { mkdirSync } from "node:fs";
 import {
   CHAT_ID,
+  HEARTBEAT_FILE,
   OUTBOX_DIR,
   SESSION_FILE,
   STATE_FILE,
   TG_API,
 } from "./config.ts";
+import { writeHeartbeat } from "./heartbeat.ts";
 import {
   loadSession as loadSessionFromFile,
   saveSession as saveSessionToFile,
@@ -287,11 +289,18 @@ export async function startBot(opts: StartOptions): Promise<void> {
       `mode=${currentState.unlocked ? "UNLOCKED" : "LOCKED"}`
   );
 
+  // Stamp once at startup so the watchdog doesn't trip in the gap between
+  // launchd starting us and the first poll completing.
+  writeHeartbeat(HEARTBEAT_FILE);
+
   while (true) {
     try {
       const url = `${TG_API}/getUpdates?timeout=30&offset=${offset}`;
       const res = await fetch(url);
       const data = (await res.json()) as TgResponse<TgUpdate[]>;
+      // Heartbeat AFTER a successful getUpdates round-trip; this means a
+      // deadlocked socket eventually stales out instead of refreshing forever.
+      writeHeartbeat(HEARTBEAT_FILE);
       if (!data.ok) {
         console.error("getUpdates error:", data.description);
         await new Promise((r) => setTimeout(r, 5000));

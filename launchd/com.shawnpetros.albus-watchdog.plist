@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shawnpetros.albus-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/shawnpetros/projects/albus-tg-bot/launchd/watchdog.sh</string>
+    </array>
+
+    <!-- Run every 60 seconds. The watchdog itself is cheap (stat + maybe
+         one launchctl call), so the 60s cadence + 90s staleness threshold
+         gives the bot ~30s of slack to recover before a forced restart. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/shawnpetros</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/shawnpetros/.albus-tg-bot/watchdog.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/shawnpetros/.albus-tg-bot/watchdog.log</string>
+</dict>
+</plist>
