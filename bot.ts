@@ -14,25 +14,15 @@
 //   /unlock, /lock, /relock, /help.
 
 import { spawn } from "node:child_process";
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-import { formatForTelegram } from "./lib/format.ts";
 import {
-  TOKEN,
   CHAT_ID,
   PERSONA_PATH,
   MCP_CONFIG,
   TG_API,
   TURN_TIMEOUT_MS,
-  TG_MSG_MAX,
   STATE_DIR,
   SESSION_FILE,
   STATE_FILE,
@@ -49,6 +39,15 @@ import {
   saveState as saveStateToFile,
   type BotState,
 } from "./lib/state.ts";
+import {
+  tg,
+  sendMessage,
+  sendTyping,
+  sendAttachment,
+  downloadFile,
+} from "./lib/telegram.ts";
+import { flushOutbox } from "./lib/outbox.ts";
+import { createScratchpad, describeToolCall } from "./lib/scratchpad.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -134,175 +133,16 @@ const saveState = (state: BotState): void => saveStateToFile(STATE_FILE, state);
 let currentSessionId: string | null = loadSession();
 let currentState: BotState = loadState();
 
-// ---------------------------------------------------------------------------
-// Telegram helpers
-// ---------------------------------------------------------------------------
-
-async function tg<T = unknown>(method: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${TG_API}/${method}`, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = (await res.json()) as TgResponse<T>;
-  if (!data.ok) throw new Error(`tg ${method}: ${data.description || "unknown error"}`);
-  return data.result as T;
-}
-
-async function sendMessage(
-  text: string,
-  { markdown = true }: { markdown?: boolean } = {}
-): Promise<void> {
-  if (!text) text = "(empty response)";
-  for (let i = 0; i < text.length; i += TG_MSG_MAX) {
-    const chunk = text.slice(i, i + TG_MSG_MAX);
-    const payload = markdown ? formatForTelegram(chunk) : chunk;
-    const body = markdown
-      ? { chat_id: Number(CHAT_ID), text: payload, parse_mode: "HTML" }
-      : { chat_id: Number(CHAT_ID), text: payload };
-    try {
-      await tg("sendMessage", body);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (markdown && /can't parse|parse_mode|entities/i.test(msg)) {
-        console.warn("HTML parse failed, sending plain:", msg);
-        await tg("sendMessage", { chat_id: Number(CHAT_ID), text: chunk });
-      } else {
-        throw e;
-      }
-    }
-  }
-}
-
-async function sendAttachment(filePath: string, caption?: string): Promise<unknown> {
-  if (!existsSync(filePath)) throw new Error(`attachment missing: ${filePath}`);
-  const buf = readFileSync(filePath);
-  const fname = filePath.split("/").pop() || "file";
-  const lowExt = (fname.split(".").pop() || "").toLowerCase();
-  let method = "sendDocument";
-  let fieldName = "document";
-  if (["jpg", "jpeg", "png", "webp", "gif"].includes(lowExt)) {
-    method = "sendPhoto";
-    fieldName = "photo";
-  } else if (["ogg", "oga", "opus"].includes(lowExt)) {
-    method = "sendVoice";
-    fieldName = "voice";
-  }
-  const form = new FormData();
-  form.append("chat_id", String(CHAT_ID));
-  form.append(fieldName, new Blob([buf]), fname);
-  if (caption) form.append("caption", caption);
-  const res = await fetch(`${TG_API}/${method}`, { method: "POST", body: form });
-  const data = (await res.json()) as TgResponse;
-  if (!data.ok) throw new Error(`${method}: ${data.description || "unknown error"}`);
-  return data.result;
-}
-
-async function flushOutbox(turnDir: string): Promise<number> {
-  if (!existsSync(turnDir)) return 0;
-  let sent = 0;
-  for (const name of readdirSync(turnDir)) {
-    if (name.startsWith(".") || name.endsWith(".caption.txt")) continue;
-    const full = `${turnDir}/${name}`;
-    const captionPath = `${full}.caption.txt`;
-    const caption = existsSync(captionPath)
-      ? readFileSync(captionPath, "utf8").trim()
-      : undefined;
-    try {
-      await sendAttachment(full, caption);
-      sent++;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`outbox send failed for ${name}: ${msg}`);
-      await sendMessage(`couldn't send attachment ${name}: ${msg}`, { markdown: false });
-    }
-  }
-  try {
-    rmSync(turnDir, { recursive: true, force: true });
-  } catch {
-    /* best-effort cleanup */
-  }
-  return sent;
-}
-
-async function sendTyping(): Promise<void> {
-  try {
-    await tg("sendChatAction", { chat_id: Number(CHAT_ID), action: "typing" });
-  } catch {
-    /* typing indicator is non-critical */
-  }
-}
-
-async function downloadFile(
-  fileId: string,
-  msgId: number,
-  kind: string = "photo"
-): Promise<string> {
-  const meta = await tg<TgFile>("getFile", { file_id: fileId });
-  if (!meta?.file_path) {
-    throw new Error(`getFile returned no file_path for ${fileId}`);
-  }
-  const ext = meta.file_path.includes(".") ? meta.file_path.split(".").pop() : "bin";
-  const safeKind = kind.replace(/[^a-z0-9]/gi, "");
-  const localPath = `${PHOTOS_DIR}/${msgId}-${safeKind}-${fileId.slice(-10)}.${ext}`;
-  const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${meta.file_path}`;
-  const res = await fetch(fileUrl);
-  if (!res.ok) {
-    throw new Error(`telegram file download ${res.status}: ${meta.file_path}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  writeFileSync(localPath, buf);
-  return localPath;
-}
+// Telegram helpers (tg, sendMessage, sendAttachment, sendTyping, downloadFile)
+// live in ./lib/telegram.ts. The outbox flush lives in ./lib/outbox.ts.
+// Scratchpad lifecycle lives in ./lib/scratchpad.ts. See imports above.
 
 // ---------------------------------------------------------------------------
 // Claude subprocess
 // ---------------------------------------------------------------------------
 
-function describeToolCall(name: string, args: Record<string, unknown>): string {
-  const basename = (p: unknown): string =>
-    typeof p === "string" && p ? p.split("/").pop() || "" : "";
-  const clip = (s: unknown, n = 60): string =>
-    typeof s === "string" ? s.slice(0, n) : "";
-  switch (name) {
-    case "Bash":
-      return `🧪 brewing: ${clip(args.description ?? args.command)}`;
-    case "Edit":
-      return `✍️ inscribing ${basename(args.file_path)}`;
-    case "Write":
-      return `📜 scribing ${basename(args.file_path)}`;
-    case "Read":
-      return `📖 perusing ${basename(args.file_path)}`;
-    case "Grep":
-      return `🔍 scrying for "${clip(args.pattern)}"`;
-    case "Glob":
-      return `🗺️ surveying "${clip(args.pattern)}"`;
-    case "WebFetch": {
-      let host = "";
-      try {
-        host = new URL(String(args.url)).host;
-      } catch {
-        /* invalid URL; show no host */
-      }
-      return host ? `🦉 dispatching an owl to ${host}` : "🦉 dispatching an owl";
-    }
-    case "WebSearch":
-      return `🔮 consulting the seeing-glass: "${clip(args.query)}"`;
-    case "Task":
-      return `🪄 summoning: ${clip(args.description)}`;
-    case "TodoWrite":
-      return `📋 charting ${Array.isArray(args.todos) ? args.todos.length : 0} todos`;
-    default:
-      if (name.startsWith("mcp__")) {
-        const frag = name.replace(/^mcp__/, "").replace(/__/g, " ");
-        if (/add|save|write|create|set|update|delete/i.test(name)) {
-          return `💾 committing: ${frag}`;
-        }
-        return `🔭 inquiring: ${frag}`;
-      }
-      return `⚙️ casting ${name}`;
-  }
-}
+// describeToolCall lives in ./lib/scratchpad.ts (same module as the scratchpad
+// itself, since that's the only caller today).
 
 function spawnAlbus(
   input: string,
@@ -600,76 +440,9 @@ async function handleUpdate(update: TgUpdate): Promise<void> {
     sendTyping();
   }, 4000);
 
-  let scratchpadMessageId: number | null = null;
-  const scratchpadLines: string[] = [];
-  let scratchpadEditTimer: ReturnType<typeof setTimeout> | null = null;
-  let scratchpadEditInFlight = false;
-  let scratchpadDirty = false;
-
-  const flushScratchpadEdit = async (): Promise<void> => {
-    if (!scratchpadMessageId || !scratchpadDirty || scratchpadEditInFlight) return;
-    scratchpadEditInFlight = true;
-    scratchpadDirty = false;
-    const text = scratchpadLines.slice(-20).join("\n").slice(0, 3800);
-    try {
-      await tg("editMessageText", {
-        chat_id: Number(CHAT_ID),
-        message_id: scratchpadMessageId,
-        text,
-      });
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      console.warn("scratchpad edit failed:", errMsg);
-    } finally {
-      scratchpadEditInFlight = false;
-      if (scratchpadDirty) scheduleScratchpadEdit();
-    }
-  };
-
-  const scheduleScratchpadEdit = (): void => {
-    if (scratchpadEditTimer) return;
-    scratchpadEditTimer = setTimeout(() => {
-      scratchpadEditTimer = null;
-      flushScratchpadEdit();
-    }, 1500);
-  };
-
-  const closeScratchpad = async (): Promise<void> => {
-    if (scratchpadEditTimer) {
-      clearTimeout(scratchpadEditTimer);
-      scratchpadEditTimer = null;
-    }
-    if (!scratchpadMessageId) return;
-    const id = scratchpadMessageId;
-    scratchpadMessageId = null;
-    try {
-      await tg("deleteMessage", { chat_id: Number(CHAT_ID), message_id: id });
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      console.warn("scratchpad delete failed:", errMsg);
-    }
-  };
-
+  const scratchpad = createScratchpad({ chatId: Number(CHAT_ID), send: tg });
   const onToolUse: ToolUseCallback = (name, args) => {
-    scratchpadLines.push(describeToolCall(name, args));
-    scratchpadDirty = true;
-    if (!scratchpadMessageId) {
-      (async () => {
-        try {
-          const sent = await tg<{ message_id: number }>("sendMessage", {
-            chat_id: Number(CHAT_ID),
-            text: "🪄 working...",
-          });
-          scratchpadMessageId = sent.message_id;
-          scheduleScratchpadEdit();
-        } catch (e) {
-          const errMsg = e instanceof Error ? e.message : String(e);
-          console.warn("scratchpad open failed:", errMsg);
-        }
-      })();
-    } else {
-      scheduleScratchpadEdit();
-    }
+    scratchpad.onToolUse(describeToolCall(name, args));
   };
 
   try {
@@ -692,11 +465,11 @@ async function handleUpdate(update: TgUpdate): Promise<void> {
       currentSessionId = result.sessionId;
       saveSession(currentSessionId);
     }
-    await closeScratchpad();
+    await scratchpad.close();
     await sendMessage(result.reply || "(no reply)");
     let outboxSent = 0;
     try {
-      outboxSent = await flushOutbox(turnOutbox);
+      outboxSent = await flushOutbox(turnOutbox, { sendAttachment, sendMessage });
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("flushOutbox failed:", errMsg);
@@ -706,15 +479,13 @@ async function handleUpdate(update: TgUpdate): Promise<void> {
       `  -> sent ${result.reply.length} chars, session=${result.sessionId?.slice(0, 8)}, ` +
         `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
         `mode=${currentState.unlocked ? "unlocked" : "locked"}, ` +
-        `tools=${scratchpadLines.length}, attachments=${outboxSent}, elapsed=${elapsedS}s`
+        `tools=${scratchpad.toolCount()}, attachments=${outboxSent}, elapsed=${elapsedS}s`
     );
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     console.error("turn failed:", errMsg);
-    if (scratchpadMessageId) {
-      scratchpadLines.push(`💥 spell fizzled: ${errMsg.slice(0, 200)}`);
-      scratchpadDirty = true;
-      await flushScratchpadEdit();
+    if (scratchpad.toolCount() > 0) {
+      await scratchpad.error(`💥 spell fizzled: ${errMsg.slice(0, 200)}`);
     } else {
       await sendMessage(`bot error: ${errMsg}`);
     }
