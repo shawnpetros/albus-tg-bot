@@ -1,0 +1,26 @@
+# OrbStack / Docker Compose for sandboxed test runs and (optionally) a
+# parallel sandbox bot. Production deployment is still launchd-on-host;
+# this file exists so the test suite can run hermetically without
+# touching ~/.albus-tg-bot or the production Telegram bot.
+
+services:
+  # `docker compose run --rm test` runs the full bun test suite in an
+  # ephemeral container. No state mounted, no secrets needed, no network
+  # writes. This is the safe-and-fast feedback loop.
+  test:
+    build: .
+    command: ["bun", "test"]
+    environment:
+      # Tests must not contact real services. Anything that needs an API
+      # key or token should fail loudly inside a test if it ever tries.
+      NODE_ENV: test
+    # No volumes: source is baked into the image at build time so the
+    # test run reflects exactly what would be committed.
+
+  # `docker compose run --rm typecheck` runs tsc in noEmit mode against
+  # the codebase. Faster than running the bot to catch type errors.
+  typecheck:
+    build: .
+    command: ["bunx", "tsc", "--noEmit"]
+    environment:
+      NODE_ENV: test
