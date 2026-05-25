@@ -41,6 +41,12 @@ export const OUTBOX_DIR = `${STATE_DIR}/outbox`;
 export const HEARTBEAT_FILE = `${STATE_DIR}/heartbeat`;
 export const HEARTBEAT_STALE_SECS = 90;
 
+// ElevenLabs voice IO (V2). Both env vars are OPTIONAL: when unset, voice
+// transcription is skipped (voice memos still get downloaded + referenced
+// by path) and the TTS CLI refuses to run. Bot starts fine without either.
+export const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+export const ALBUS_VOICE_ID = process.env.ALBUS_VOICE_ID;
+
 // Locked-mode tool allowlist: pure read. Excludes anything that mutates host,
 // substrate, or external state. Memory writes (add_memories, delete_memories)
 // require /unlock so the substrate can't drift behind your back. TodoWrite is

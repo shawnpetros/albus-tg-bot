@@ -32,6 +32,8 @@ import { flushOutbox } from "./outbox.ts";
 import { createScratchpad, describeToolCall } from "./scratchpad.ts";
 import { spawnAlbus, type ToolUseCallback } from "./claude.ts";
 import { handleSlashCommand } from "./slash.ts";
+import { transcribeAudio } from "./elevenlabs.ts";
+import { ELEVENLABS_API_KEY } from "./config.ts";
 
 // Telegram payload shapes we narrow against in the per-message flow. Kept
 // inline here (rather than in a shared types module) because poll.ts is the
@@ -176,7 +178,23 @@ export async function startBot(opts: StartOptions): Promise<void> {
         );
         const mime = mediaAttachment.obj.mime_type || "unknown";
         const captionLine = caption || (hasText ? msg.text! : "(no caption)");
-        userInput = `${captionLine}\n\n[${mediaAttachment.kind} at ${localPath} (mime: ${mime}, name: ${mediaAttachment.label})]`;
+        // For voice memos: try to transcribe via ElevenLabs Scribe so the
+        // model gets text it can reason about, while keeping the audio path
+        // for cases where the transcript loses nuance. Transcription is
+        // best-effort; failure falls back to path-only reference.
+        let transcriptLine = "";
+        if (mediaAttachment.kind === "voice" && ELEVENLABS_API_KEY) {
+          try {
+            const t = await transcribeAudio(localPath);
+            if (t.text.trim()) {
+              transcriptLine = `\n[voice transcript: ${t.text.trim()}]`;
+            }
+          } catch (e) {
+            const msgErr = e instanceof Error ? e.message : String(e);
+            console.warn("voice transcription failed:", msgErr);
+          }
+        }
+        userInput = `${captionLine}${transcriptLine}\n\n[${mediaAttachment.kind} at ${localPath} (mime: ${mime}, name: ${mediaAttachment.label})]`;
       } else {
         userInput = msg.text!;
       }
