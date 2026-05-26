@@ -1,65 +1,158 @@
 # albus-tg-bot
 
-Telegram surface for Albus. Message `@argyle_cc_bot` on Telegram, get an Albus reply with full Mem0 access.
+> A Telegram surface for a fully-agentic Claude Code session. Voice in, voice out, attachments both ways, persistent memory across messages, and a watchdog that catches the moments when polling pretends it's alive but isn't.
 
-## What it is
+Named after Dumbledore. Built so I could ask my laptop to do things from the couch and have it actually do them.
 
-- Single Node script that long-polls Telegram `getUpdates`.
-- For each authorized message, spawns `claude -p` with:
-  - `--setting-sources project,local` (skip user-scope hooks/skills bloat)
-  - `--dangerously-skip-permissions` (full agent on the host machine)
-  - `--mcp-config mcp-config.json` (only OpenMemory MCP, nothing else)
-  - `--append-system-prompt persona.md` (Albus voice + memory instructions)
-  - `--output-format json` (so the harness can parse `result` + `session_id`)
-  - `--resume <session_id>` when a previous session exists (continuity)
-- Captures stdout JSON, extracts `.result` for the reply, sends via Telegram `sendMessage`. Splits at 4000 chars.
+---
 
-## Session continuity
+## What it actually is
 
-The bot persists the Claude session id to `~/.albus-tg-bot/session.json` between turns. This survives daemon restarts (launchd respawn, machine reboot) — if the JSONL is still on disk, the session resumes.
+A `bun run bot.ts` daemon that long-polls Telegram, spawns `claude -p` per message with the OpenMemory MCP attached and a senior-wizard persona injected, and pipes the response back. The bot is the transport; Claude Code is the brain. The interesting bit is the lap around that.
 
-Two layers of memory:
-- **Short-term** = session continuity via `--resume`. Last several turns are in Claude's immediate context.
-- **Long-term** = Mem0 / OpenMemory MCP. Cross-session, cross-agent (Albus, Penny, etc.).
+```
+Telegram  →  bot (polling)  →  claude -p --resume <session>  →  reply
+                  │                       │
+                  │                       ├─ MCP: openmemory (memory + Honcho)
+                  ├─ download photos / docs / voice
+                  ├─ transcribe voice via ElevenLabs Scribe
+                  ├─ render Markdown → Telegram HTML
+                  ├─ stream tool-use events into a wizarding scratchpad
+                  ├─ flush per-turn outbox (reply.md, reply.mp3, etc.)
+                  └─ write heartbeat for the watchdog
+```
 
-Slash commands:
-- `/reset` or `/new` — clear the session, next message starts a fresh thread (Mem0 unaffected).
-- `/session` — print current session id.
-- `/help` — list commands.
+---
+
+## Features
+
+**Two-way attachments.** Inbound photos, PDFs, voice notes, audio, video, video notes. The bot drops the file on disk and references the absolute path in the prompt so Claude can `Read` it. Outbound: Claude writes any file into the per-turn outbox dir, the bot scans and sends each via `sendDocument` / `sendPhoto` / `sendVoice` based on extension. Optional sibling `<file>.caption.txt` provides the caption.
+
+**Voice both directions.** Inbound voice memos transcribe via ElevenLabs Scribe; Claude sees `[voice transcript: ...]` and reasons on text. Outbound: a tiny `scripts/tts.ts` CLI generates an mp3 in the cloned voice of your choice and drops it in the outbox. Round-trip Telegram voice works because `sendVoice` accepts the .mp3 cleanly.
+
+**Markdown that actually renders.** Replies go through a CommonMark → Telegram HTML converter so `**bold**`, `*italic*`, fenced ` ```code``` `, `# headings`, `- bullets`, and `[links](url)` all show up the way they should. Bullets become `•` because Telegram has no list element. Falls back to plain text if the HTML parser ever chokes.
+
+**Lock / unlock modes.** Default mode is locked: Read, Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, and openmemory search/list only. No Bash, no Edit, no Write, no memory writes. `/unlock` opens the full toolbox. `/lock` or `/relock` closes it again. The persona enforces the etiquette; the bot enforces the surface.
+
+**Session continuity.** Each message threads through `claude -p --resume <session_id>`. The session id persists across daemon restarts (launchd respawn, machine reboot) - if the JSONL is still on disk, you pick up where you left off.
+
+**Self-healing.** A separate launchd watchdog reads `~/.albus-tg-bot/heartbeat` every 60s. The bot stamps that file on every successful `getUpdates` round-trip; if it goes stale (>90s old), the watchdog runs `launchctl kickstart -k`. Catches the "alive but wedged" case that `KeepAlive: { Crashed: true }` cannot.
+
+**Streaming tool-use scratchpad.** When Claude starts pulling tools (Read, Bash, Grep, MCP calls), a single Telegram message opens, edits in place per tool fired, and deletes itself when the final reply lands. Each tool gets a wizarding line: `🧪 brewing`, `📜 scribing`, `🔍 scrying`, `🦉 dispatching an owl`. Failed turns leave the scratchpad with a `💥 spell fizzled` line so postmortems survive.
+
+---
+
+## Architecture
+
+```
+albus-tg-bot/
+├── bot.ts                 # entry: loads persona, ensures dirs, calls startBot()
+├── lib/
+│   ├── config.ts          # env vars, paths, mode prompts, constants
+│   ├── format.ts          # CommonMark → Telegram HTML (pure, no I/O)
+│   ├── state.ts           # session.json + state.json read/write
+│   ├── heartbeat.ts       # writeHeartbeat() for the watchdog
+│   ├── telegram.ts        # tg/sendMessage/sendAttachment/sendTyping/downloadFile
+│   ├── outbox.ts          # per-turn attachment dir flush (deps injected)
+│   ├── scratchpad.ts      # tool-use scratchpad lifecycle (deps injected)
+│   ├── elevenlabs.ts      # TTS + STT wrappers
+│   ├── claude.ts          # spawnAlbus subprocess + stream-json parser
+│   ├── slash.ts           # /reset /lock /unlock /session /status /help router
+│   └── poll.ts            # handleUpdate + the main poll loop
+├── scripts/
+│   ├── tts.ts             # bun CLI: text → mp3 via ElevenLabs
+│   └── register-commands.sh   # one-shot: register slash commands with Telegram
+├── launchd/
+│   ├── com.shawnpetros.albus-tg-bot.plist    # the main bot
+│   ├── com.shawnpetros.albus-watchdog.plist  # the heartbeat watcher
+│   ├── run.sh             # sources ~/.exports, execs bun run bot.ts
+│   └── watchdog.sh        # cheap bash that stat-checks heartbeat mtime
+├── test/                  # 60+ unit + integration tests, bun test
+├── persona.md             # the Albus voice + behavioral rules
+├── mcp-config.json        # OpenMemory MCP (will be Honcho-bridge soon)
+├── tsconfig.json
+├── Dockerfile             # for hermetic test runs
+└── docker-compose.yml     # `docker compose run --rm test`
+```
+
+Module graph has zero cycles. `outbox` and `scratchpad` take their telegram dependencies via injection so they're testable without a real bot. Pure helpers (`format`, `state`, `heartbeat`) have zero imports beyond core.
+
+---
 
 ## Setup
 
-```bash
-# Required env (already in ~/.exports if you've run that path):
-export ARGYLE_BOT_TOKEN=8644288223:...
-export ARGYLE_BOT_CHAT_ID=8442348137
+Requires Bun (`curl -fsSL https://bun.sh/install | bash`), Claude Code CLI, and a Telegram bot token from [@BotFather](https://t.me/BotFather).
 
-# Install (no deps; Node 18+ has native fetch):
-cd ~/projects/albus-tg-bot
-node bot.mjs
+```bash
+git clone git@github.com:shawnpetros/albus-tg-bot.git
+cd albus-tg-bot
+bun install
+
+# Required env:
+export ALBUS_BOT_TOKEN="<from BotFather>"
+export ALBUS_BOT_CHAT_ID="<your numeric chat id>"
+
+# Optional (enables voice):
+export ELEVENLABS_API_KEY="<your key>"
+export ALBUS_VOICE_ID="<voice id from elevenlabs.io>"
+
+# Run it:
+bun run bot.ts
 ```
 
-## Files
+For permanent running, the `launchd/` directory has the plists. `cp launchd/*.plist ~/Library/LaunchAgents/`, edit the paths to match your install, `launchctl load`.
 
-- `bot.mjs` — main loop
-- `persona.md` — Albus persona injected via `--append-system-prompt`
-- `mcp-config.json` — OpenMemory MCP only
-- `package.json` — no deps, `npm start` and `npm run dev` shortcuts
+---
 
-## Authorization
+## Test it
 
-Only messages from `ARGYLE_BOT_CHAT_ID` are processed. Other chat_ids are logged and ignored.
+```bash
+bun test               # all 60+ tests
+bun test format        # one file
+bunx tsc --noEmit      # type-check pass
 
-## Limits
+docker compose run --rm test       # hermetic, no host state touched
+docker compose run --rm typecheck  # tsc in a container
+```
 
-- One in-flight turn at a time. Concurrent messages get a "still working" reply and are dropped (not queued in v1).
-- 5-minute timeout per turn.
-- 4000-char Telegram message split.
+---
 
-## Running as a service
+## Persona
 
-For now, run it in a tmux pane or a foreground terminal. If it earns its keep, wrap it in a launchd plist. Pattern matches `~/projects/smithy/launchd/`.
+`persona.md` injects on every spawn via `claude -p --append-system-prompt`. It defines:
 
-## Adding more personas
+- The voice: senior-wizard register, no em dashes, no AI-slop vocabulary, real verbs, no employee-handbook energy
+- Brevity rules: 3-6 lines / ~500 chars inline; longer answers go to `reply.md` in the outbox
+- The lock/unlock contract: in locked mode, the persona enforces what the tool allowlist denies
+- File handling: how to interpret inbound `[screenshot at /path]` / `[document at /path]` / `[voice transcript: ...]` markers
+- Voice replies: the TTS CLI invocation pattern (only available unlocked because it needs Bash + Write)
 
-The persona pattern is portable: drop another markdown file with frontmatter (name, agent_command, model_hint) + body. Variants might include `penny.md` (different voice for meeting capture), `pm.md` (project manager mode for Linear-heavy days), etc. The bot script can grow a `--persona <path>` arg to swap.
+The persona file is hot-reloaded on every spawn, so editing it takes effect on the next message without restarting the daemon.
+
+---
+
+## Slash commands
+
+| Command | What it does |
+|---|---|
+| `/reset` or `/new` | Clear the Claude session; next message starts a fresh thread (long-term memory unaffected) |
+| `/unlock` | Switch to full tools (Bash, Edit, Write, memory writes). Replies append a "still unlocked" reminder. |
+| `/lock` or `/relock` | Back to read-only safe mode |
+| `/session` or `/status` | Print current session id and mode |
+| `/help` | List commands |
+
+---
+
+## Why this exists
+
+Three reasons:
+
+1. **A Claude agent on my phone is materially more useful than a Claude agent in a terminal I can't reach from the couch.** Couch-coding is the headline use case.
+2. **The interesting work isn't Telegram, it's the per-turn outbox + persona injection + lock contract.** That pattern generalizes to Discord, Slack, voice, anywhere with a message bus.
+3. **It's the smallest possible test bed for the "lots of agents in one room" architecture.** Same skeleton; swap Telegram for Discord and you've got Albus + Penny + Matilda able to share a channel.
+
+---
+
+## Status
+
+Personal infrastructure. MIT-friendly if anyone forks it; not currently soliciting issues. The Telegram bot username it talks to is private to one chat id by design.
