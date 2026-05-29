@@ -12,7 +12,7 @@ set -eo pipefail
 
 HEARTBEAT_FILE="$HOME/.albus-tg-bot/heartbeat"
 STALE_SECS=90
-BOT_LABEL="com.shawnpetros.albus-tg-bot"
+BOT_LABEL="com.YOUR_DOMAIN.albus-tg-bot"
 LOG="$HOME/.albus-tg-bot/watchdog.log"
 
 log() {

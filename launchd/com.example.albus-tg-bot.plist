@@ -3,22 +3,22 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.shawnpetros.albus-tg-bot</string>
+    <string>com.YOUR_DOMAIN.albus-tg-bot</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/shawnpetros/projects/albus-tg-bot/launchd/run.sh</string>
+        <string>/Users/YOUR_USERNAME/projects/albus-tg-bot/launchd/run.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/shawnpetros/projects/albus-tg-bot</string>
+    <string>/Users/YOUR_USERNAME/projects/albus-tg-bot</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
-        <string>/Users/shawnpetros</string>
+        <string>/Users/YOUR_USERNAME</string>
         <!-- ALBUS_BOT_TOKEN, ALBUS_BOT_CHAT_ID, ANTHROPIC_API_KEY come from
              ~/.exports via run.sh wrapper. Secrets stay in env, never inlined. -->
     </dict>
@@ -29,7 +29,7 @@
     <key>KeepAlive</key>
     <dict>
         <!-- Restart on crash. SuccessfulExit=false means we DON'T restart on
-             a clean exit (in case Shawn manually kills it). -->
+             a clean exit (in case you manually kill it). -->
         <key>SuccessfulExit</key>
         <false/>
         <key>Crashed</key>
@@ -37,10 +37,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/shawnpetros/.albus-tg-bot/stdout.log</string>
+    <string>/Users/YOUR_USERNAME/.albus-tg-bot/stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/shawnpetros/.albus-tg-bot/stderr.log</string>
+    <string>/Users/YOUR_USERNAME/.albus-tg-bot/stderr.log</string>
 
     <key>ThrottleInterval</key>
     <integer>10</integer>

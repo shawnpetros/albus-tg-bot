@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.shawnpetros.albus-watchdog</string>
+    <string>com.YOUR_DOMAIN.albus-watchdog</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/shawnpetros/projects/albus-tg-bot/launchd/watchdog.sh</string>
+        <string>/Users/YOUR_USERNAME/projects/albus-tg-bot/launchd/watchdog.sh</string>
     </array>
 
     <!-- Run every 60 seconds. The watchdog itself is cheap (stat + maybe
@@ -21,16 +21,16 @@
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
-        <string>/Users/shawnpetros</string>
+        <string>/Users/YOUR_USERNAME</string>
     </dict>
 
     <key>RunAtLoad</key>
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/shawnpetros/.albus-tg-bot/watchdog.log</string>
+    <string>/Users/YOUR_USERNAME/.albus-tg-bot/watchdog.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/shawnpetros/.albus-tg-bot/watchdog.log</string>
+    <string>/Users/YOUR_USERNAME/.albus-tg-bot/watchdog.log</string>
 </dict>
 </plist>

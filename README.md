@@ -8,12 +8,12 @@ Named after Dumbledore. Built so I could ask my laptop to do things from the cou
 
 ## What it actually is
 
-A `bun run bot.ts` daemon that long-polls Telegram, spawns `claude -p` per message with the OpenMemory MCP attached and a senior-wizard persona injected, and pipes the response back. The bot is the transport; Claude Code is the brain. The interesting bit is the lap around that.
+A `bun run bot.ts` daemon that long-polls Telegram, spawns `claude -p` per message with the Honcho MCP attached and a senior-wizard persona injected, and pipes the response back. The bot is the transport; Claude Code is the brain. The interesting bit is the lap around that.
 
 ```
 Telegram  →  bot (polling)  →  claude -p --resume <session>  →  reply
                   │                       │
-                  │                       ├─ MCP: openmemory (memory + Honcho)
+                  │                       ├─ MCP: honcho (long-term memory)
                   ├─ download photos / docs / voice
                   ├─ transcribe voice via ElevenLabs Scribe
                   ├─ render Markdown → Telegram HTML
@@ -32,7 +32,7 @@ Telegram  →  bot (polling)  →  claude -p --resume <session>  →  reply
 
 **Markdown that actually renders.** Replies go through a CommonMark → Telegram HTML converter so `**bold**`, `*italic*`, fenced ` ```code``` `, `# headings`, `- bullets`, and `[links](url)` all show up the way they should. Bullets become `•` because Telegram has no list element. Falls back to plain text if the HTML parser ever chokes.
 
-**Lock / unlock modes.** Default mode is locked: Read, Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, and openmemory search/list only. No Bash, no Edit, no Write, no memory writes. `/unlock` opens the full toolbox. `/lock` or `/relock` closes it again. The persona enforces the etiquette; the bot enforces the surface.
+**Lock / unlock modes.** Default mode is locked: Read, Grep, Glob, WebFetch, WebSearch, Task, TodoWrite, and Honcho recall only (`mcp__honcho__search`/`chat`/`get_context`). No Bash, no Edit, no Write, no memory writes. `/unlock` opens the full toolbox. `/lock` or `/relock` closes it again. The persona enforces the etiquette; the bot enforces the surface.
 
 **Session continuity.** Each message threads through `claude -p --resume <session_id>`. The session id persists across daemon restarts (launchd respawn, machine reboot) - if the JSONL is still on disk, you pick up where you left off.
 
@@ -63,13 +63,13 @@ albus-tg-bot/
 │   ├── tts.ts             # bun CLI: text → mp3 via ElevenLabs
 │   └── register-commands.sh   # one-shot: register slash commands with Telegram
 ├── launchd/
-│   ├── com.shawnpetros.albus-tg-bot.plist    # the main bot
-│   ├── com.shawnpetros.albus-watchdog.plist  # the heartbeat watcher
-│   ├── run.sh             # sources ~/.exports, execs bun run bot.ts
-│   └── watchdog.sh        # cheap bash that stat-checks heartbeat mtime
+│   ├── com.example.albus-tg-bot.plist    # template → com.<host>.albus-tg-bot.plist
+│   ├── com.example.albus-watchdog.plist  # template → com.<host>.albus-watchdog.plist
+│   ├── run.example.sh     # template → run.sh: sources your secrets, execs bun run bot.ts
+│   └── watchdog.example.sh # template → watchdog.sh: stat-checks heartbeat mtime
 ├── test/                  # 60+ unit + integration tests, bun test
 ├── persona.md             # the Albus voice + behavioral rules
-├── mcp-config.json        # OpenMemory MCP (will be Honcho-bridge soon)
+├── mcp-config.example.json # Honcho MCP template (placeholders)
 ├── tsconfig.json
 ├── Dockerfile             # for hermetic test runs
 └── docker-compose.yml     # `docker compose run --rm test`
@@ -100,7 +100,35 @@ export ALBUS_VOICE_ID="<voice id from elevenlabs.io>"
 bun run bot.ts
 ```
 
-For permanent running, the `launchd/` directory has the plists. `cp launchd/*.plist ~/Library/LaunchAgents/`, edit the paths to match your install, `launchctl load`.
+For permanent running, the `launchd/` directory ships `.example` versions of both plists and the run/watchdog shell scripts. The rendered host-specific versions are `.gitignore`d. Set yours up once:
+
+```bash
+cd launchd
+cp com.example.albus-tg-bot.plist   com.<YOUR_DOMAIN>.albus-tg-bot.plist
+cp com.example.albus-watchdog.plist com.<YOUR_DOMAIN>.albus-watchdog.plist
+cp run.example.sh                   run.sh
+cp watchdog.example.sh              watchdog.sh
+# edit the four files: replace /Users/YOUR_USERNAME and com.YOUR_DOMAIN
+cp com.<YOUR_DOMAIN>.*.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.<YOUR_DOMAIN>.albus-tg-bot.plist
+launchctl load ~/Library/LaunchAgents/com.<YOUR_DOMAIN>.albus-watchdog.plist
+```
+
+---
+
+## Per-host configuration
+
+The repo ships generic defaults; per-host config lives outside the working tree so cloners aren't inheriting someone else's setup. Layout:
+
+| What | Where | Notes |
+|---|---|---|
+| Base persona (ships in repo) | `persona.md` | Generic senior-wizard register, brevity + format rules, attachment/outbox/voice mechanics. No operator-specific anything. |
+| Persona overlay (your local) | `~/.config/albus/persona.local.md` | Optional. If present, the bot appends it to the base at spawn time. Put your name, your projects, your memory-substrate setup, your voice ids, anything operator-specific here. |
+| MCP servers (ships in repo) | `mcp-config.example.json` | Template with placeholders. |
+| MCP servers (your local) | `~/.config/albus/mcp-config.json` | Resolution order: env `ALBUS_MCP_CONFIG` → `~/.config/albus/mcp-config.json` → repo `.example.json`. |
+| Launchd plists, shell wrappers | `launchd/*.example.*` (repo) → host-specific copies (gitignored) | See "Setup" above. |
+
+`~/.config/albus/` is created on first need; the bot doesn't fail without it (overlay and per-host mcp-config are both optional).
 
 ---
 

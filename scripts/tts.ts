@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Tiny CLI that synthesises speech via ElevenLabs and writes an mp3 file.
 // Designed for Claude (the bot's subprocess) to invoke via Bash when it
-// wants to send Shawn a voice reply.
+// wants to send the operator a voice reply.
 //
 // Usage:
 //   bun run scripts/tts.ts --text "Hello, friend." --out /path/to/reply.mp3

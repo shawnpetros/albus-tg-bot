@@ -5,3 +5,15 @@ dist/
 bun.lockb
 .env
 .env.local
+
+# Per-host runtime config. Ship mcp-config.example.json for cloners;
+# the real one lives at ~/.config/albus/mcp-config.json (or ALBUS_MCP_CONFIG).
+mcp-config.json
+
+# Host-specific launchd files. Cloners customize from .example.plist /
+# .example.sh; the rendered versions stay local. The .example.* files
+# stay tracked so cloners have a template.
+launchd/com.*.plist
+launchd/run.sh
+launchd/watchdog.sh
+!launchd/*.example.*

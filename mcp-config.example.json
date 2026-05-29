@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy this to ~/.config/albus/mcp-config.json and edit. Or set ALBUS_MCP_CONFIG to point at your own path. The bot resolves in this order: env var → ~/.config/albus/mcp-config.json → this example as last-resort fallback.",
+  "_honcho_hint": "The bot uses Honcho as its long-term memory backend, addressed as mcp__honcho__*. Replace the command/args/env below with your own Honcho MCP server invocation. Set HONCHO_API_KEY (and any base URL / workspace) to your real values. Do NOT commit real keys to this file.",
+  "mcpServers": {
+    "honcho": {
+      "type": "stdio",
+      "command": "REPLACE_WITH_HONCHO_MCP_COMMAND",
+      "args": ["REPLACE_WITH_HONCHO_MCP_ARGS"],
+      "env": {
+        "HONCHO_API_KEY": "REPLACE_WITH_YOUR_HONCHO_API_KEY"
+      }
+    }
+  }
+}

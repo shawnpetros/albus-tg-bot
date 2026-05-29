@@ -7,8 +7,8 @@
 #
 # Requires ARGYLE_BOT_TOKEN in env (sourced from ~/.exports).
 #
-# Source of truth for what's available is the slash-command switch in
-# bot.mjs. Keep this list in sync with that switch's canonical names.
+# Source of truth for what's available is the slash-command router in
+# lib/slash.ts. Keep this list in sync with that router's canonical names.
 # Token env var is still ARGYLE_BOT_TOKEN (env vars unchanged in the rename).
 
 set -euo pipefail

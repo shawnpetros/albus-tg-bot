@@ -122,7 +122,7 @@ describe("transcribeAudio", () => {
       url = String(input);
       return new Response(
         JSON.stringify({
-          text: "hello shawn",
+          text: "hello there",
           language_code: "en",
           duration_secs: 1.5,
         }),
@@ -132,7 +132,7 @@ describe("transcribeAudio", () => {
 
     const out = await transcribeAudio(audio);
     expect(url).toBe("https://api.elevenlabs.io/v1/speech-to-text");
-    expect(out.text).toBe("hello shawn");
+    expect(out.text).toBe("hello there");
     expect(out.languageCode).toBe("en");
     expect(out.durationSecs).toBe(1.5);
   });

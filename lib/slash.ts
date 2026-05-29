@@ -4,14 +4,37 @@
 // touches the filesystem directly; that keeps the router pure-ish and
 // the bot in control of when persistence happens.
 
-import type { BotState } from "./state.ts";
+import type { BotState, SessionRecord } from "./state.ts";
 
 export interface SlashDeps {
   getSession: () => string | null;
   clearSession: () => void;
   getState: () => BotState;
   setUnlocked: (next: BotState) => void;
+  // Full current-session record (accounting included) for status display, or
+  // null when there's no session / the file is missing or corrupt.
+  getSessionRecord: () => SessionRecord | null;
+  // Queue a manual compaction pass. Runs on the serial turn queue (after any
+  // in-flight turn), so this just signals intent; it does not block.
+  requestCompact: () => void;
   sendMessage: (text: string, opts?: { markdown?: boolean }) => Promise<void>;
+}
+
+// Render a created_at ISO timestamp as a friendly age like "2h 13m" or "45m"
+// or "3d 4h". Returns "—" when the input is missing or unparseable.
+function formatAge(createdAt: string | undefined): string {
+  if (!createdAt) return "—";
+  const started = Date.parse(createdAt);
+  if (Number.isNaN(started)) return "—";
+  let secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  const days = Math.floor(secs / 86_400);
+  secs -= days * 86_400;
+  const hours = Math.floor(secs / 3600);
+  secs -= hours * 3600;
+  const mins = Math.floor(secs / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
 }
 
 export async function handleSlashCommand(
@@ -54,7 +77,7 @@ export async function handleSlashCommand(
       deps.setUnlocked(next);
       await deps.sendMessage(
         wasUnlocked
-          ? "🔒 Locked. Read-only safe mode active. (Read, Grep, WebFetch, WebSearch, openmemory search/list/add - no Bash/Edit/Write.)"
+          ? "🔒 Locked. Read-only safe mode active. (Read, Grep, WebFetch, WebSearch, Honcho recall via mcp__honcho__search/chat/get_context - no Bash/Edit/Write, no memory writes.)"
           : "🔒 Already locked. Read-only mode."
       );
       return true;
@@ -63,13 +86,48 @@ export async function handleSlashCommand(
     case "/status": {
       const sid = deps.getSession();
       const state = deps.getState();
+      const rec = deps.getSessionRecord();
       const sessionLine = sid
         ? `Session: ${sid}`
         : "Session: none (next message starts one)";
       const modeLine = state.unlocked
         ? `Mode: 🔓 UNLOCKED (full tools, since ${state.unlocked_at || "unknown"})`
         : "Mode: 🔒 LOCKED (read-only safe mode)";
-      await deps.sendMessage(`${sessionLine}\n${modeLine}`);
+
+      // Current-session stats. Each field degrades to a placeholder when the
+      // record is absent or the field is missing (legacy files).
+      const turnsStr =
+        typeof rec?.turns === "number" ? String(rec.turns) : "none";
+      const ctxStr =
+        typeof rec?.last_prompt_tokens === "number"
+          ? `~${Math.round(rec.last_prompt_tokens / 1000)}k tokens`
+          : "—";
+      const costStr =
+        typeof rec?.total_cost_usd === "number"
+          ? `$${rec.total_cost_usd.toFixed(4)}`
+          : "—";
+      const ageStr = formatAge(rec?.created_at);
+
+      const statsLines = [
+        `Turns: ${turnsStr}`,
+        `Context: ${ctxStr}`,
+        `Cost: ${costStr}`,
+        `Age: ${ageStr}`,
+      ].join("\n");
+
+      await deps.sendMessage(`${sessionLine}\n${modeLine}\n\n${statsLines}`);
+      return true;
+    }
+    case "/compact": {
+      const sid = deps.getSession();
+      if (!sid) {
+        await deps.sendMessage("Nothing to compact — no current session.");
+        return true;
+      }
+      deps.requestCompact();
+      await deps.sendMessage(
+        "queued a compaction — running after the current turn if any."
+      );
       return true;
     }
     case "/help": {
@@ -79,8 +137,9 @@ export async function handleSlashCommand(
           "/unlock - switch to full tools (Bash, Edit, Write, etc.). Replies will end with a \"still unlocked - /lock when done\" reminder.\n" +
           "/lock or /relock - switch back to read-only safe mode.\n\n" +
           "🧵  conversation\n" +
-          "/reset or /new - clear the Claude session, fresh thread (Mem0 stays).\n" +
-          "/session or /status - show current session id and mode.\n" +
+          "/reset or /new - clear the Claude session, fresh thread (Honcho memory stays).\n" +
+          "/session or /status - show current session id, mode, and stats (turns, context size, cost, age).\n" +
+          "/compact - manually trigger a compaction pass on the current session.\n" +
           "/help - this message.\n\n" +
           "Default mode is locked. Read-only by design - anything that touches the host or substrate needs an /unlock first."
       );

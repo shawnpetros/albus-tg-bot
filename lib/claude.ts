@@ -22,6 +22,51 @@ export interface ClaudeTurnResult {
   sessionId: string | null;
   cost: number;
   turns: number;
+  promptTokens: number;
+  contextWindow: number | null;
+  costUsd: number;
+}
+
+export interface UsageInfo {
+  promptTokens: number;
+  contextWindow: number | null;
+  costUsd: number;
+}
+
+// Pull token-usage + context-window + cost out of a stream-json `result`
+// event. Defensive: error results may omit `usage`/`modelUsage` entirely, so
+// every field has a safe fallback and this never throws.
+export function extractUsage(resultEvent: any): UsageInfo {
+  const evt = resultEvent || {};
+
+  const usage = evt.usage || {};
+  const promptTokens =
+    (usage.input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0);
+
+  const modelUsage = evt.modelUsage || {};
+  const models = Object.values(modelUsage) as Array<{
+    contextWindow?: number;
+    costUSD?: number;
+  }>;
+
+  let contextWindow: number | null = null;
+  for (const m of models) {
+    if (typeof m?.contextWindow === "number") {
+      contextWindow =
+        contextWindow === null ? m.contextWindow : Math.max(contextWindow, m.contextWindow);
+    }
+  }
+
+  let costUsd: number;
+  if (typeof evt.total_cost_usd === "number") {
+    costUsd = evt.total_cost_usd;
+  } else {
+    costUsd = models.reduce((sum, m) => sum + (m?.costUSD || 0), 0);
+  }
+
+  return { promptTokens, contextWindow, costUsd };
 }
 
 export type ToolUseCallback = (
@@ -42,7 +87,7 @@ function buildOutboxBlock(outboxDir: string): string {
   if (!outboxDir) return "";
   return (
     `\n\n--- Outbox (per-turn attachment dir) ---\n` +
-    `Your outbox for THIS turn is \`${outboxDir}\`. If you want to send Shawn a file (markdown summary, PDF, screenshot, voice clip, anything), write it into that dir. The bot flushes the outbox after your reply lands and sends each file as a Telegram attachment. Optional caption: write a sibling \`<filename>.caption.txt\` next to the file. Use this for long-form output (anything past ~6 lines): write the full thing as \`reply.md\` to the outbox and reply inline with a 2-sentence summary. Files starting with \`.\` are ignored.`
+    `Your outbox for THIS turn is \`${outboxDir}\`. If you want to send a file (markdown summary, PDF, screenshot, voice clip, anything), write it into that dir. The bot flushes the outbox after your reply lands and sends each file as a Telegram attachment. Optional caption: write a sibling \`<filename>.caption.txt\` next to the file. Use this for long-form output (anything past ~6 lines): write the full thing as \`reply.md\` to the outbox and reply inline with a 2-sentence summary. Files starting with \`.\` are ignored.`
   );
 }
 
@@ -174,15 +219,56 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
         total_cost_usd?: number;
         num_turns?: number;
       };
+      const usage = extractUsage(fr);
       resolveP({
         reply: fr.result || "",
         sessionId: fr.session_id || null,
         cost: fr.total_cost_usd || 0,
         turns: fr.num_turns || 0,
+        promptTokens: usage.promptTokens,
+        contextWindow: usage.contextWindow,
+        costUsd: usage.costUsd,
       });
     });
 
     child.stdin.write(input);
     child.stdin.end();
+  });
+}
+
+// Run a headless /compact against an existing session. No persona, mode, or
+// outbox decoration: this is a maintenance op, not a turn. Compaction keeps
+// the same session_id, so on success the caller's session file needs no
+// change. Resolves true on a clean exit, false on timeout or non-zero exit
+// (the caller treats a false as non-fatal and carries on). Uses the same
+// SIGKILL-on-timeout guard as spawnAlbus.
+export function compactSession(sessionId: string): Promise<boolean> {
+  return new Promise((resolveP) => {
+    const args = [
+      "-p",
+      "/compact",
+      "--resume",
+      sessionId,
+      "--output-format",
+      "json",
+    ];
+    const child = spawn("claude", args, { stdio: ["pipe", "pipe", "pipe"] });
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveP(ok);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(false);
+    }, TURN_TIMEOUT_MS);
+
+    child.on("error", () => finish(false));
+    child.on("close", (code: number | null) => finish(code === 0));
+
+    // No input to send; /compact is driven entirely by the arg.
+    child.stdin?.end();
   });
 }

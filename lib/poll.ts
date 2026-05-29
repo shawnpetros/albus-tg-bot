@@ -1,12 +1,13 @@
 // The bot's main loop and per-message handler. Owns the mutable per-process
-// state (current session id, lock mode, busy flag, offset cursor) and wires
-// together Claude, Telegram, the scratchpad, the outbox, and the slash
-// router. Other modules stay pure or take dependencies; this is where the
-// orchestration happens.
+// state (current session id, lock mode, offset cursor) and the serial turn
+// queue, and wires together Claude, Telegram, the scratchpad, the outbox, and
+// the slash router. Other modules stay pure or take dependencies; this is
+// where the orchestration happens.
 
 import { mkdirSync } from "node:fs";
 import {
   CHAT_ID,
+  COMPACT_TOKEN_THRESHOLD,
   HEARTBEAT_FILE,
   OUTBOX_DIR,
   SESSION_FILE,
@@ -17,8 +18,10 @@ import { writeHeartbeat } from "./heartbeat.ts";
 import {
   loadSession as loadSessionFromFile,
   saveSession as saveSessionToFile,
+  loadSessionRecord,
   loadState as loadStateFromFile,
   saveState as saveStateToFile,
+  recordTurn,
   type BotState,
 } from "./state.ts";
 import {
@@ -30,10 +33,40 @@ import {
 } from "./telegram.ts";
 import { flushOutbox } from "./outbox.ts";
 import { createScratchpad, describeToolCall } from "./scratchpad.ts";
-import { spawnAlbus, type ToolUseCallback } from "./claude.ts";
+import { spawnAlbus, compactSession, type ToolUseCallback } from "./claude.ts";
 import { handleSlashCommand } from "./slash.ts";
 import { transcribeAudio } from "./elevenlabs.ts";
 import { ELEVENLABS_API_KEY } from "./config.ts";
+import { TurnQueue } from "./queue.ts";
+
+// --- Pure helpers (unit-tested in test/poll-helpers.test.ts) ---
+
+// Whether a freshly-completed turn's prompt-token count warrants scheduling a
+// compaction pass. `>=` so a turn that lands exactly on the threshold still
+// triggers.
+export function shouldCompact(promptTokens: number): boolean {
+  return promptTokens >= COMPACT_TOKEN_THRESHOLD;
+}
+
+// Whether a turn-failure error message looks like the session is unusable and
+// the turn should be retried on a fresh session. Widened beyond the original
+// session/resume/jsonl set to also catch process-exit and timeout failures,
+// which in practice usually mean a wedged or corrupt session.
+export function looksLikeSessionLoss(errMsg: string): boolean {
+  return /session|resume|jsonl|exit(ed)?|timed?\s*out|timeout/i.test(errMsg);
+}
+
+// A unit of work for the serial turn queue. User messages are enqueued at the
+// tail; compaction is enqueueFront'd so it runs before pending messages but
+// after the in-flight turn.
+type QueueOp =
+  | {
+      kind: "message";
+      userInput: string;
+      messageId: number;
+      turnOutbox: string;
+    }
+  | { kind: "compact"; promptTokens: number };
 
 // Telegram payload shapes we narrow against in the per-message flow. Kept
 // inline here (rather than in a shared types module) because poll.ts is the
@@ -95,7 +128,6 @@ export async function startBot(opts: StartOptions): Promise<void> {
 
   let currentSessionId: string | null = loadSessionFromFile(SESSION_FILE);
   let currentState: BotState = loadStateFromFile(STATE_FILE);
-  let busy = false;
   let offset = 0;
 
   const slashDeps = {
@@ -108,6 +140,14 @@ export async function startBot(opts: StartOptions): Promise<void> {
     setUnlocked: (next: BotState) => {
       currentState = next;
       saveStateToFile(STATE_FILE, next);
+    },
+    getSessionRecord: () => loadSessionRecord(SESSION_FILE),
+    requestCompact: () => {
+      const rec = loadSessionRecord(SESSION_FILE);
+      queue.enqueueFront({
+        kind: "compact",
+        promptTokens: rec?.last_prompt_tokens ?? 0,
+      });
     },
     sendMessage,
   };
@@ -208,13 +248,23 @@ export async function startBot(opts: StartOptions): Promise<void> {
     const turnOutbox = `${OUTBOX_DIR}/${msg.message_id}`;
     mkdirSync(turnOutbox, { recursive: true });
 
-    if (busy) {
-      await sendMessage(
-        "still working on the previous turn, queue this and try again in a moment"
-      );
-      return;
-    }
-    busy = true;
+    // Hand the turn to the serial queue. Follow-ups fired during an in-flight
+    // turn are buffered here and processed in order rather than dropped.
+    queue.enqueue({
+      kind: "message",
+      userInput,
+      messageId: msg.message_id,
+      turnOutbox,
+    });
+  }
+
+  // --- Per-turn processing (one claude -p run; single-flight via the queue) ---
+
+  async function processMessage(op: {
+    userInput: string;
+    turnOutbox: string;
+  }): Promise<void> {
+    const { userInput, turnOutbox } = op;
 
     const turnStartedAt = Date.now();
     await sendTyping();
@@ -226,6 +276,10 @@ export async function startBot(opts: StartOptions): Promise<void> {
     const onToolUse: ToolUseCallback = (name, args) => {
       scratchpad.onToolUse(describeToolCall(name, args));
     };
+
+    // Tracks whether we already retried on a fresh session; used to surface the
+    // real error (not a generic fizzle) once the retry also fails.
+    let retried = false;
 
     try {
       let result;
@@ -240,21 +294,26 @@ export async function startBot(opts: StartOptions): Promise<void> {
         });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        const looksLikeSessionLoss =
-          currentSessionId && /session|resume|jsonl/i.test(errMsg);
-        if (looksLikeSessionLoss) {
+        if (currentSessionId && looksLikeSessionLoss(errMsg)) {
           console.warn(
-            `resume failed for ${currentSessionId}, starting fresh: ${errMsg}`
+            `session looks lost for ${currentSessionId}, retrying fresh: ${errMsg}`
           );
           currentSessionId = null;
           saveSessionToFile(SESSION_FILE, null);
+          retried = true;
+          // Seed the fresh session with a recovery nudge so Albus recalls
+          // recent context from Honcho before answering. The persona already
+          // grants Honcho access; this just points him at it.
+          const recoveryPersona =
+            persona +
+            "\n\n(Recovering from an interrupted session, briefly recall recent context from Honcho before continuing.)";
           result = await spawnAlbus({
             input: userInput,
             sessionId: null,
             unlocked: currentState.unlocked,
             onToolUse,
             outboxDir: turnOutbox,
-            persona,
+            persona: recoveryPersona,
           });
         } else {
           throw e;
@@ -273,6 +332,17 @@ export async function startBot(opts: StartOptions): Promise<void> {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.error("flushOutbox failed:", errMsg);
       }
+
+      // Usage accounting against the current session, then a compaction check.
+      recordTurn(SESSION_FILE, {
+        promptTokens: result.promptTokens,
+        costUsd: result.costUsd,
+      });
+      if (shouldCompact(result.promptTokens)) {
+        // Run before pending user messages, after this in-flight turn.
+        queue.enqueueFront({ kind: "compact", promptTokens: result.promptTokens });
+      }
+
       const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
       console.log(
         `  -> sent ${result.reply.length} chars, session=${result.sessionId?.slice(
@@ -280,22 +350,79 @@ export async function startBot(opts: StartOptions): Promise<void> {
           8
         )}, ` +
           `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
+          `prompt_tokens=${result.promptTokens}, ` +
           `mode=${currentState.unlocked ? "unlocked" : "locked"}, ` +
           `tools=${scratchpad.toolCount()}, attachments=${outboxSent}, elapsed=${elapsedS}s`
       );
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("turn failed:", errMsg);
+      // Surface the REAL error. If we already retried on a fresh session and
+      // still failed, say so and include the actual message — don't swallow it
+      // behind a generic fizzle.
+      const detail = retried
+        ? `💥 the spell fizzled and the retry too — ${errMsg}`
+        : `💥 the spell fizzled — ${errMsg}`;
       if (scratchpad.toolCount() > 0) {
-        await scratchpad.error(`💥 spell fizzled: ${errMsg.slice(0, 200)}`);
+        await scratchpad.error(detail);
       } else {
-        await sendMessage(`bot error: ${errMsg}`);
+        await sendMessage(detail, { markdown: false });
       }
     } finally {
       clearInterval(typingTimer);
-      busy = false;
     }
   }
+
+  // --- Compaction op: headless /compact on the current session ---
+
+  async function processCompact(op: { promptTokens: number }): Promise<void> {
+    if (!currentSessionId) {
+      // Nothing to compact (session rotated out from under us). No-op.
+      return;
+    }
+    const approxK = Math.round(op.promptTokens / 1000);
+    await sendMessage(
+      `📊 context at ~${approxK}k tokens — compacting so I stay sharp…`,
+      { markdown: false }
+    );
+    let ok = false;
+    try {
+      ok = await compactSession(currentSessionId);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("compaction threw:", errMsg);
+      ok = false;
+    }
+    if (ok) {
+      // Compaction keeps the same session_id, so no session-file change.
+      console.log(`  -> compacted session=${currentSessionId.slice(0, 8)}`);
+      await sendMessage("✅ compacted, carrying on.", { markdown: false });
+    } else {
+      console.warn("compaction failed; continuing on existing session");
+      await sendMessage(
+        "compaction didn't take — carrying on as-is.",
+        { markdown: false }
+      );
+    }
+  }
+
+  // Single-flight serial queue: never two claude processes against one session
+  // at once. One bad item logs and the queue keeps draining.
+  const queue = new TurnQueue<QueueOp>(
+    async (op) => {
+      if (op.kind === "message") {
+        await processMessage(op);
+      } else {
+        await processCompact(op);
+      }
+    },
+    {
+      onError: (err, op) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`queue item (${op.kind}) errored:`, errMsg);
+      },
+    }
+  );
 
   console.log(
     `albus-tg-bot started, watching chat_id=${CHAT_ID}, ` +
