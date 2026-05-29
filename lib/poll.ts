@@ -7,6 +7,7 @@
 import { mkdirSync } from "node:fs";
 import {
   CHAT_ID,
+  COMPACT_COOLDOWN_TURNS,
   COMPACT_TOKEN_THRESHOLD,
   DEFAULT_MODEL,
   HEARTBEAT_FILE,
@@ -23,6 +24,7 @@ import {
   loadState as loadStateFromFile,
   saveState as saveStateToFile,
   recordTurn,
+  markCompacted,
   type BotState,
 } from "./state.ts";
 import {
@@ -42,11 +44,26 @@ import { TurnQueue } from "./queue.ts";
 
 // --- Pure helpers (unit-tested in test/poll-helpers.test.ts) ---
 
-// Whether a freshly-completed turn's prompt-token count warrants scheduling a
-// compaction pass. `>=` so a turn that lands exactly on the threshold still
-// triggers.
-export function shouldCompact(promptTokens: number): boolean {
-  return promptTokens >= COMPACT_TOKEN_THRESHOLD;
+// Whether a freshly-completed turn warrants scheduling a compaction pass.
+// Keys on the TRUE context fill (the last assistant message's input-side
+// total), NOT the cumulative result-event usage which stacks into the millions
+// and false-fired on nearly every turn.
+//
+// `>=` so a turn that lands exactly on the threshold still triggers. The
+// cooldown is a backstop against thrashing near the boundary: if we compacted
+// at `lastCompactTurn`, hold off until at least COMPACT_COOLDOWN_TURNS turns
+// have elapsed (`turns` is the post-turn count). With no prior compaction
+// (lastCompactTurn undefined) it's a pure threshold gate.
+export function shouldCompact(
+  contextTokens: number,
+  turns: number,
+  lastCompactTurn?: number
+): boolean {
+  if (contextTokens < COMPACT_TOKEN_THRESHOLD) return false;
+  if (lastCompactTurn !== undefined && turns - lastCompactTurn < COMPACT_COOLDOWN_TURNS) {
+    return false;
+  }
+  return true;
 }
 
 // Whether a turn-failure error message looks like the session is unusable and
@@ -67,7 +84,7 @@ type QueueOp =
       messageId: number;
       turnOutbox: string;
     }
-  | { kind: "compact"; promptTokens: number };
+  | { kind: "compact"; contextTokens: number };
 
 // Telegram payload shapes we narrow against in the per-message flow. Kept
 // inline here (rather than in a shared types module) because poll.ts is the
@@ -144,10 +161,12 @@ export async function startBot(opts: StartOptions): Promise<void> {
     },
     getSessionRecord: () => loadSessionRecord(SESSION_FILE),
     requestCompact: () => {
+      // Manual /compact: bypass the threshold/cooldown gate entirely. Report
+      // the last recorded context fill for the user-facing note.
       const rec = loadSessionRecord(SESSION_FILE);
       queue.enqueueFront({
         kind: "compact",
-        promptTokens: rec?.last_prompt_tokens ?? 0,
+        contextTokens: rec?.last_prompt_tokens ?? 0,
       });
     },
     setModel: (model: string | null) => {
@@ -343,19 +362,21 @@ export async function startBot(opts: StartOptions): Promise<void> {
         console.error("flushOutbox failed:", errMsg);
       }
 
-      // Usage accounting against the current session, then a compaction check.
-      recordTurn(SESSION_FILE, {
-        promptTokens: result.promptTokens,
+      // Usage accounting against the current session, then a gated compaction
+      // check. last_prompt_tokens stores the TRUE context fill (contextTokens),
+      // so /status shows ~59k, not the cumulative millions.
+      const rec = recordTurn(SESSION_FILE, {
+        promptTokens: result.contextTokens,
         costUsd: result.costUsd,
       });
-      // Gate on RESIDENT size, not promptTokens. promptTokens is cumulative
+      // Gate on contextTokens (the true fill: last assistant message's
+      // input-side total), NOT result.promptTokens. promptTokens is cumulative
       // billed input across the whole turn — a multi-tool turn stacks cache
-      // reads into the millions and would trip the gate every time. residentTokens
-      // is one round-trip's view of the thread, which is what we actually want
-      // to keep under the context ceiling.
-      if (shouldCompact(result.residentTokens)) {
+      // reads into the millions and would false-fire the gate every time. The
+      // cooldown is a backstop against thrashing near the threshold.
+      if (shouldCompact(result.contextTokens, rec.turns ?? 0, rec.last_compact_turn)) {
         // Run before pending user messages, after this in-flight turn.
-        queue.enqueueFront({ kind: "compact", promptTokens: result.residentTokens });
+        queue.enqueueFront({ kind: "compact", contextTokens: result.contextTokens });
       }
 
       const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
@@ -365,7 +386,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
           8
         )}, ` +
           `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
-          `prompt_tokens=${result.promptTokens}, resident=${result.residentTokens}, ` +
+          `context_tokens=${result.contextTokens}, prompt_tokens(cumulative)=${result.promptTokens}, ` +
           `mode=${currentState.unlocked ? "unlocked" : "locked"}, ` +
           `tools=${scratchpad.toolCount()}, attachments=${outboxSent}, elapsed=${elapsedS}s`
       );
@@ -390,14 +411,14 @@ export async function startBot(opts: StartOptions): Promise<void> {
 
   // --- Compaction op: headless /compact on the current session ---
 
-  async function processCompact(op: { promptTokens: number }): Promise<void> {
+  async function processCompact(op: { contextTokens: number }): Promise<void> {
     if (!currentSessionId) {
       // Nothing to compact (session rotated out from under us). No-op.
       return;
     }
-    const approxK = Math.round(op.promptTokens / 1000);
+    const approxK = Math.round(op.contextTokens / 1000);
     await sendMessage(
-      `📊 context at ~${approxK}k tokens — compacting so I stay sharp…`,
+      `📊 trimming context (~${approxK}k tokens) to stay sharp…`,
       { markdown: false }
     );
     let ok = false;
@@ -410,8 +431,11 @@ export async function startBot(opts: StartOptions): Promise<void> {
     }
     if (ok) {
       // Compaction keeps the same session_id, so no session-file change.
+      // Stamp the cooldown point so we don't re-compact for the next
+      // COMPACT_COOLDOWN_TURNS turns.
+      markCompacted(SESSION_FILE);
       console.log(`  -> compacted session=${currentSessionId.slice(0, 8)}`);
-      await sendMessage("✅ compacted, carrying on.", { markdown: false });
+      await sendMessage("✅ done.", { markdown: false });
     } else {
       console.warn("compaction failed; continuing on existing session");
       await sendMessage(

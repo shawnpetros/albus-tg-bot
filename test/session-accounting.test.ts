@@ -7,6 +7,7 @@ import {
   saveSession,
   recordTurn,
   loadSessionRecord,
+  markCompacted,
 } from "../lib/state.ts";
 
 let tmpDir: string;
@@ -148,5 +149,51 @@ describe("recordTurn", () => {
     expect(rec.turns).toBe(1);
     expect(rec.last_prompt_tokens).toBe(300);
     expect(rec.total_cost_usd).toBeCloseTo(0.02);
+  });
+});
+
+describe("markCompacted (cooldown bookkeeping)", () => {
+  test("stamps last_compact_turn with the current turns count", () => {
+    saveSession(sessionFile, "sess-1");
+    recordTurn(sessionFile, { promptTokens: 1000, costUsd: 0.05 });
+    recordTurn(sessionFile, { promptTokens: 2000, costUsd: 0.05 });
+    const rec = markCompacted(sessionFile);
+    expect(rec.last_compact_turn).toBe(2);
+    expect(loadSessionRecord(sessionFile)?.last_compact_turn).toBe(2);
+  });
+
+  test("preserves other accounting fields", () => {
+    saveSession(sessionFile, "sess-1");
+    recordTurn(sessionFile, { promptTokens: 1000, costUsd: 0.05 });
+    const created = readRaw(sessionFile).created_at;
+    const rec = markCompacted(sessionFile);
+    expect(rec.session_id).toBe("sess-1");
+    expect(rec.turns).toBe(1);
+    expect(rec.last_prompt_tokens).toBe(1000);
+    expect(rec.total_cost_usd).toBeCloseTo(0.05);
+    expect(rec.created_at).toBe(created);
+  });
+
+  test("last_compact_turn is cleared on session rotation", () => {
+    saveSession(sessionFile, "sess-1");
+    recordTurn(sessionFile, { promptTokens: 1000, costUsd: 0.05 });
+    markCompacted(sessionFile);
+    expect(loadSessionRecord(sessionFile)?.last_compact_turn).toBe(1);
+
+    saveSession(sessionFile, "sess-2");
+    expect(loadSessionRecord(sessionFile)?.last_compact_turn).toBeUndefined();
+  });
+
+  test("last_compact_turn is preserved on re-save of the SAME id", () => {
+    saveSession(sessionFile, "sess-1");
+    recordTurn(sessionFile, { promptTokens: 1000, costUsd: 0.05 });
+    markCompacted(sessionFile);
+    saveSession(sessionFile, "sess-1");
+    expect(loadSessionRecord(sessionFile)?.last_compact_turn).toBe(1);
+  });
+
+  test("missing file: stamps last_compact_turn 0 without throwing", () => {
+    const rec = markCompacted(sessionFile);
+    expect(rec.last_compact_turn).toBe(0);
   });
 });

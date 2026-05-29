@@ -22,49 +22,69 @@ export interface ClaudeTurnResult {
   sessionId: string | null;
   cost: number;
   turns: number;
-  // Cumulative billed input across every internal step in the turn. Right for
-  // cost, WRONG for "how big is the session" — a multi-tool turn re-reads the
-  // cache each step so this stacks far past resident size. Keep for accounting.
+  // Cumulative billed input across every internal step in the turn, derived
+  // from the result event's `usage`. Right for cost reasoning, WRONG for "how
+  // big is the session" — a multi-tool turn re-reads the cache each step so
+  // this stacks into the millions, past the context window. Kept for logging
+  // ONLY. Never gate compaction on this. See contextTokens.
   promptTokens: number;
-  // Resident context size: the input-side total of the LAST message_start in
-  // the turn (one round-trip's view of the conversation). This is what to gate
-  // compaction on — it tracks thread growth, not per-turn billing churn.
-  residentTokens: number;
+  // True context fill: the input-side total of the LAST assistant message that
+  // carried a usage block in the turn. One round-trip's view of the
+  // conversation — what the next --resume actually carries. THIS is what gates
+  // compaction in poll.ts. ~50-59k in practice, not millions.
+  contextTokens: number;
   contextWindow: number | null;
   costUsd: number;
+}
+
+// A single assistant message's input usage, as it appears on
+// `message.usage` / `message_start.message.usage` in the stream. Any field may
+// be absent.
+export interface AssistantUsage {
+  input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
 }
 
 export interface UsageInfo {
-  promptTokens: number;
-  contextWindow: number | null;
+  // True context fill (last assistant message's input-side total). 0 when no
+  // assistant usage was seen (e.g. an errored turn).
+  contextTokens: number;
+  // Cumulative turn cost from the result event. Correct as-is.
   costUsd: number;
 }
 
-// Pull token-usage + context-window + cost out of a stream-json `result`
-// event. Defensive: error results may omit `usage`/`modelUsage` entirely, so
-// every field has a safe fallback and this never throws.
-export function extractUsage(resultEvent: any): UsageInfo {
+function blockTokens(u: AssistantUsage | null | undefined): number {
+  if (!u) return 0;
+  return (
+    (u.input_tokens || 0) +
+    (u.cache_read_input_tokens || 0) +
+    (u.cache_creation_input_tokens || 0)
+  );
+}
+
+// Reduce a turn's per-message usage blocks + the result event into the two
+// numbers that matter: the true context fill and the cumulative cost.
+//
+// contextTokens is the LAST assistant message's input-side total, NOT the sum.
+// The result event's `usage` is cumulative across every internal API call in
+// the agentic turn (it stacks cache re-reads into the millions and can exceed
+// the context window) — so it is deliberately ignored for context sizing and
+// used only for cost. This is the fix for the false-fire compaction bug.
+//
+// Defensive: missing/empty inputs yield contextTokens 0 and cost 0, never
+// throws.
+export function extractUsage(
+  assistantUsages: AssistantUsage[] | null | undefined,
+  resultEvent: any
+): UsageInfo {
+  const blocks = Array.isArray(assistantUsages) ? assistantUsages : [];
+  const last = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+  const contextTokens = blockTokens(last);
+
   const evt = resultEvent || {};
-
-  const usage = evt.usage || {};
-  const promptTokens =
-    (usage.input_tokens || 0) +
-    (usage.cache_read_input_tokens || 0) +
-    (usage.cache_creation_input_tokens || 0);
-
   const modelUsage = evt.modelUsage || {};
-  const models = Object.values(modelUsage) as Array<{
-    contextWindow?: number;
-    costUSD?: number;
-  }>;
-
-  let contextWindow: number | null = null;
-  for (const m of models) {
-    if (typeof m?.contextWindow === "number") {
-      contextWindow =
-        contextWindow === null ? m.contextWindow : Math.max(contextWindow, m.contextWindow);
-    }
-  }
+  const models = Object.values(modelUsage) as Array<{ costUSD?: number }>;
 
   let costUsd: number;
   if (typeof evt.total_cost_usd === "number") {
@@ -73,7 +93,25 @@ export function extractUsage(resultEvent: any): UsageInfo {
     costUsd = models.reduce((sum, m) => sum + (m?.costUSD || 0), 0);
   }
 
-  return { promptTokens, contextWindow, costUsd };
+  return { contextTokens, costUsd };
+}
+
+// Pull the max contextWindow advertised across modelUsage entries from a
+// result event, or null if none. Kept separate from extractUsage (which is
+// about the turn's own numbers); the window is a model capability, not usage.
+export function extractContextWindow(resultEvent: any): number | null {
+  const modelUsage = (resultEvent || {}).modelUsage || {};
+  const models = Object.values(modelUsage) as Array<{ contextWindow?: number }>;
+  let contextWindow: number | null = null;
+  for (const m of models) {
+    if (typeof m?.contextWindow === "number") {
+      contextWindow =
+        contextWindow === null
+          ? m.contextWindow
+          : Math.max(contextWindow, m.contextWindow);
+    }
+  }
+  return contextWindow;
 }
 
 export type ToolUseCallback = (
@@ -141,10 +179,11 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
       total_cost_usd?: number;
       num_turns?: number;
     } | null = null;
-    // Resident context size from the most recent message_start. Each step's
-    // message_start reports that round-trip's full input view; the last one is
-    // the peak resident size for the turn. Gated on for compaction in poll.ts.
-    let lastResidentTokens = 0;
+    // Per-message input usage, one entry per assistant message that carried a
+    // usage block (each message_start reports that round-trip's input view).
+    // extractUsage takes the LAST as the true context fill. Collected as a
+    // list so the helper stays pure/testable rather than us pre-reducing here.
+    const assistantUsages: AssistantUsage[] = [];
     const pendingTools = new Map<number, { name: string; json: string }>();
 
     const timer = setTimeout(() => {
@@ -176,11 +215,14 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
       if (evt.type !== "stream_event") return;
       const inner = evt.event || {};
       if (inner.type === "message_start") {
-        const u = inner.message?.usage || {};
-        lastResidentTokens =
-          (u.input_tokens || 0) +
-          (u.cache_read_input_tokens || 0) +
-          (u.cache_creation_input_tokens || 0);
+        const u = inner.message?.usage;
+        if (u) {
+          assistantUsages.push({
+            input_tokens: u.input_tokens,
+            cache_read_input_tokens: u.cache_read_input_tokens,
+            cache_creation_input_tokens: u.cache_creation_input_tokens,
+          });
+        }
         pendingTools.clear();
         return;
       }
@@ -241,15 +283,19 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
         total_cost_usd?: number;
         num_turns?: number;
       };
-      const usage = extractUsage(fr);
+      const usage = extractUsage(assistantUsages, fr);
+      // promptTokens (cumulative) is for the log line only; the result event's
+      // own usage drives it. Compaction gates on usage.contextTokens.
+      const ru = (fr as { usage?: AssistantUsage }).usage;
+      const promptTokens = blockTokens(ru);
       resolveP({
         reply: fr.result || "",
         sessionId: fr.session_id || null,
         cost: fr.total_cost_usd || 0,
         turns: fr.num_turns || 0,
-        promptTokens: usage.promptTokens,
-        residentTokens: lastResidentTokens,
-        contextWindow: usage.contextWindow,
+        promptTokens,
+        contextTokens: usage.contextTokens,
+        contextWindow: extractContextWindow(fr),
         costUsd: usage.costUsd,
       });
     });

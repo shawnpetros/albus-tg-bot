@@ -39,6 +39,13 @@ export const DEFAULT_MODEL =
 export const COMPACT_TOKEN_THRESHOLD =
   Number(process.env.ALBUS_COMPACT_TOKEN_THRESHOLD) || 120_000;
 
+// Cooldown backstop for compaction: even when context is at/over the
+// threshold, don't enqueue another /compact until at least this many turns
+// have elapsed since the last one. Stops thrashing near the boundary.
+// Override via env.
+export const COMPACT_COOLDOWN_TURNS =
+  Number(process.env.ALBUS_COMPACT_COOLDOWN_TURNS) || 5;
+
 // User-config dir for overrides and local-only settings. Persona overlay
 // (persona.local.md) and per-host mcp-config.json live here, gitignored,
 // so cloners can configure without touching the repo.

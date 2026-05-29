@@ -17,6 +17,10 @@ export interface SessionRecord {
   turns?: number;
   last_prompt_tokens?: number;
   total_cost_usd?: number;
+  // The `turns` value at the last compaction. Drives the compaction cooldown
+  // in poll.ts (no re-compact until COMPACT_COOLDOWN_TURNS have elapsed since
+  // this point). Reset on session rotation alongside the other accumulators.
+  last_compact_turn?: number;
 }
 
 export interface BotState {
@@ -74,8 +78,13 @@ export function saveSession(file: string, id: string | null): void {
         turns: prev?.turns ?? 0,
         last_prompt_tokens: prev?.last_prompt_tokens ?? 0,
         total_cost_usd: prev?.total_cost_usd ?? 0,
+        // Preserve the cooldown marker across re-saves of the same session;
+        // it is only meaningful within one session's lifetime.
+        last_compact_turn: prev?.last_compact_turn,
       }
     : {
+        // Rotation/establishment: fresh session, no compaction yet, so
+        // last_compact_turn is intentionally omitted (reset).
         session_id: id,
         updated_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
@@ -104,6 +113,27 @@ export function recordTurn(
     turns: (prev?.turns ?? 0) + 1,
     last_prompt_tokens: usage.promptTokens,
     total_cost_usd: (prev?.total_cost_usd ?? 0) + usage.costUsd,
+    last_compact_turn: prev?.last_compact_turn,
+  };
+  writeFileSync(file, JSON.stringify(record, null, 2));
+  return record;
+}
+
+// Record that a compaction just ran by stamping last_compact_turn with the
+// current turns count. The cooldown gate in poll.ts measures distance from
+// this point. Preserves all other accounting; tolerant of missing/legacy
+// files (stamps last_compact_turn = current turns, defaulting to 0).
+export function markCompacted(file: string): SessionRecord {
+  const prev = loadSessionRecord(file);
+  const record: SessionRecord = {
+    session_id: prev?.session_id ?? null,
+    updated_at: new Date().toISOString(),
+    reset_at: prev?.reset_at,
+    created_at: prev?.created_at,
+    turns: prev?.turns ?? 0,
+    last_prompt_tokens: prev?.last_prompt_tokens ?? 0,
+    total_cost_usd: prev?.total_cost_usd ?? 0,
+    last_compact_turn: prev?.turns ?? 0,
   };
   writeFileSync(file, JSON.stringify(record, null, 2));
   return record;
