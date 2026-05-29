@@ -69,10 +69,19 @@ function resolveMcpConfig(): string {
 }
 export const MCP_CONFIG = resolveMcpConfig();
 
+// Per-day spend guardrail. When the day's accumulated Claude cost crosses
+// this (USD), the bot posts a one-time warning. Soft cap: turns keep
+// processing (see poll.ts), the warning just fires once per day. Override
+// via env.
+export const DAILY_COST_LIMIT_USD = Number(process.env.ALBUS_DAILY_COST_USD) || 20;
+
 // State paths
 export const STATE_DIR = `${homedir()}/.albus-tg-bot`;
 export const SESSION_FILE = `${STATE_DIR}/session.json`;
 export const STATE_FILE = `${STATE_DIR}/state.json`;
+// Daily-spend ledger, sibling to STATE_FILE. Small {date, cost_usd, warned}
+// record that rolls over when the calendar date changes.
+export const DAILY_COST_FILE = `${STATE_DIR}/daily-cost.json`;
 export const PHOTOS_DIR = `${STATE_DIR}/photos`;
 export const OUTBOX_DIR = `${STATE_DIR}/outbox`;
 

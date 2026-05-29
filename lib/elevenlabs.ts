@@ -25,6 +25,18 @@ export interface SynthesizeOptions {
   stability?: number;
   // 0.0 (less like the original speaker) to 1.0 (more). 0.75 is the docs default.
   similarityBoost?: number;
+  // ElevenLabs output container/codec, passed as the `output_format` query
+  // param (the reliable lever on the TTS endpoint). Defaults to mp3 to keep
+  // the tts.ts CLI and any mp3 consumers working. Telegram's sendVoice needs
+  // OGG/Opus, so the voice-reply path passes "opus_48000_64".
+  // See: https://elevenlabs.io/docs/api-reference/text-to-speech
+  outputFormat?: string;
+}
+
+// Map an ElevenLabs output_format to the HTTP Accept mime type. Opus formats
+// ship as an OGG/Opus container (audio/ogg); everything else here is mp3.
+function acceptForFormat(format: string): string {
+  return format.startsWith("opus") ? "audio/ogg" : "audio/mpeg";
 }
 
 export async function synthesizeSpeech(
@@ -41,6 +53,7 @@ export async function synthesizeSpeech(
   if (!text || !text.trim()) {
     throw new Error("synthesizeSpeech: text is required");
   }
+  const outputFormat = opts.outputFormat ?? "mp3_44100_128";
   const body = {
     text,
     model_id: opts.modelId ?? "eleven_turbo_v2_5",
@@ -49,12 +62,13 @@ export async function synthesizeSpeech(
       similarity_boost: opts.similarityBoost ?? 0.75,
     },
   };
-  const res = await fetch(`${TTS_BASE}/${opts.voiceId}`, {
+  const url = `${TTS_BASE}/${opts.voiceId}?output_format=${encodeURIComponent(outputFormat)}`;
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "xi-api-key": apiKey,
       "Content-Type": "application/json",
-      Accept: "audio/mpeg",
+      Accept: acceptForFormat(outputFormat),
     },
     body: JSON.stringify(body),
   });

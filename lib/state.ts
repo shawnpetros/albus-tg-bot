@@ -139,6 +139,82 @@ export function markCompacted(file: string): SessionRecord {
   return record;
 }
 
+// --- Per-day spend guardrail ---------------------------------------------
+
+export interface DailyCostRecord {
+  // Local calendar date this record accounts for, "YYYY-MM-DD".
+  date: string;
+  // Sum of turn costUsd accrued on `date`.
+  cost_usd: number;
+  // Whether the over-limit warning has already fired today (once-per-day).
+  warned?: boolean;
+}
+
+// Local "YYYY-MM-DD" for a given Date. Pure; used so the rollover boundary is
+// the operator's calendar day, not UTC.
+export function localDateStr(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Pure: fold a turn's cost into the daily record, rolling over when the date
+// changes. On a new day the accumulator resets to just `add` and the warned
+// flag clears. Within the same day, costs accumulate and warned is preserved.
+// A null/undefined prior (first-ever, missing, or corrupt file) starts fresh.
+export function rolloverDailyCost(
+  prev: DailyCostRecord | null | undefined,
+  date: string,
+  add: number
+): DailyCostRecord {
+  if (!prev || prev.date !== date) {
+    return { date, cost_usd: add, warned: false };
+  }
+  return { date, cost_usd: prev.cost_usd + add, warned: prev.warned ?? false };
+}
+
+// Pure predicate: has the day's spend reached/crossed the limit?
+export function overDailyLimit(record: DailyCostRecord, limit: number): boolean {
+  return record.cost_usd >= limit;
+}
+
+export function loadDailyCost(file: string): DailyCostRecord | null {
+  if (!existsSync(file)) return null;
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as DailyCostRecord;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDailyCost(file: string, record: DailyCostRecord): void {
+  writeFileSync(file, JSON.stringify(record, null, 2));
+}
+
+// Load, fold in this turn's cost (with date rollover), persist, return the new
+// record. The single entry point poll.ts uses after a turn.
+export function recordDailyCost(
+  file: string,
+  add: number,
+  now: Date = new Date()
+): DailyCostRecord {
+  const prev = loadDailyCost(file);
+  const next = rolloverDailyCost(prev, localDateStr(now), add);
+  saveDailyCost(file, next);
+  return next;
+}
+
+// Stamp warned=true so the over-limit warning fires only once per day.
+export function markDailyWarned(file: string): DailyCostRecord {
+  const prev = loadDailyCost(file);
+  const record: DailyCostRecord = prev
+    ? { ...prev, warned: true }
+    : { date: localDateStr(), cost_usd: 0, warned: true };
+  saveDailyCost(file, record);
+  return record;
+}
+
 export function loadState(file: string): BotState {
   if (!existsSync(file)) return { unlocked: false };
   try {

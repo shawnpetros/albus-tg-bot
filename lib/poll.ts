@@ -4,11 +4,13 @@
 // the slash router. Other modules stay pure or take dependencies; this is
 // where the orchestration happens.
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import {
   CHAT_ID,
   COMPACT_COOLDOWN_TURNS,
   COMPACT_TOKEN_THRESHOLD,
+  DAILY_COST_FILE,
+  DAILY_COST_LIMIT_USD,
   DEFAULT_MODEL,
   HEARTBEAT_FILE,
   OUTBOX_DIR,
@@ -25,6 +27,9 @@ import {
   saveState as saveStateToFile,
   recordTurn,
   markCompacted,
+  recordDailyCost,
+  markDailyWarned,
+  overDailyLimit,
   type BotState,
 } from "./state.ts";
 import {
@@ -38,8 +43,8 @@ import { flushOutbox } from "./outbox.ts";
 import { createScratchpad, describeToolCall } from "./scratchpad.ts";
 import { spawnAlbus, compactSession, type ToolUseCallback } from "./claude.ts";
 import { handleSlashCommand } from "./slash.ts";
-import { transcribeAudio } from "./elevenlabs.ts";
-import { ELEVENLABS_API_KEY } from "./config.ts";
+import { transcribeAudio, synthesizeSpeech } from "./elevenlabs.ts";
+import { ELEVENLABS_API_KEY, ALBUS_VOICE_ID } from "./config.ts";
 import { TurnQueue } from "./queue.ts";
 
 // --- Pure helpers (unit-tested in test/poll-helpers.test.ts) ---
@@ -74,6 +79,70 @@ export function looksLikeSessionLoss(errMsg: string): boolean {
   return /session|resume|jsonl|exit(ed)?|timed?\s*out|timeout/i.test(errMsg);
 }
 
+// Bounded recently-seen update_id tracker. Telegram occasionally redelivers an
+// update even after we advance the offset past it (observed in prod). A small
+// FIFO ring + membership Set lets us skip the dup while staying bounded: when
+// the ring fills, the oldest id is evicted from both structures. Pure data
+// structure, unit-tested in test/poll-helpers.test.ts.
+export class SeenUpdates {
+  private set = new Set<number>();
+  private ring: number[] = [];
+  constructor(private readonly cap: number = 200) {}
+
+  // True if id was already recorded. Non-mutating.
+  isDuplicate(id: number): boolean {
+    return this.set.has(id);
+  }
+
+  // Record id as seen, evicting the oldest if at capacity. No-op on re-add.
+  add(id: number): void {
+    if (this.set.has(id)) return;
+    this.set.add(id);
+    this.ring.push(id);
+    if (this.ring.length > this.cap) {
+      const evicted = this.ring.shift();
+      if (evicted !== undefined) this.set.delete(evicted);
+    }
+  }
+
+  get size(): number {
+    return this.set.size;
+  }
+}
+
+// Pure: getUpdates 429 backoff delay (ms). Mirrors telegram.ts's send-path
+// policy: prefer Telegram's retry_after, else fall back to the flat default.
+export function getUpdatesBackoffMs(retryAfterS?: number): number {
+  const DEFAULT_S = 5;
+  if (typeof retryAfterS === "number" && retryAfterS > 0) {
+    return Math.min(retryAfterS, 60) * 1000;
+  }
+  return DEFAULT_S * 1000;
+}
+
+// Whether the bot should deterministically synthesize a voice reply for this
+// turn. Pure so it can be unit-tested without the network or filesystem.
+// True only when: the inbound turn was a voice memo, BOTH ElevenLabs env vars
+// are present, AND the agent did not already drop a voice clip in the outbox
+// (don't double-send). The agent convention may still write reply.mp3, while
+// the bot writes reply.ogg, so the caller passes true if EITHER exists.
+// Any false input short-circuits to false.
+export function shouldSynthesizeVoice(
+  isVoice: boolean,
+  hasApiKey: boolean,
+  hasVoiceId: boolean,
+  replyAlreadyExists: boolean
+): boolean {
+  if (!isVoice) return false;
+  if (!hasApiKey || !hasVoiceId) return false;
+  if (replyAlreadyExists) return false;
+  return true;
+}
+
+// Cap synthesized text length to bound TTS cost/latency. Long replies get
+// truncated; the full text still goes out as a message.
+export const VOICE_SYNTH_MAX_CHARS = 1500;
+
 // A unit of work for the serial turn queue. User messages are enqueued at the
 // tail; compaction is enqueueFront'd so it runs before pending messages but
 // after the in-flight turn.
@@ -83,6 +152,9 @@ type QueueOp =
       userInput: string;
       messageId: number;
       turnOutbox: string;
+      // True when the inbound message was a voice memo. Drives deterministic
+      // voice-on-voice TTS in processMessage.
+      isVoice: boolean;
     }
   | { kind: "compact"; contextTokens: number };
 
@@ -135,6 +207,8 @@ interface TgResponse<T> {
   ok: boolean;
   result?: T;
   description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number };
 }
 
 export interface StartOptions {
@@ -147,6 +221,10 @@ export async function startBot(opts: StartOptions): Promise<void> {
   let currentSessionId: string | null = loadSessionFromFile(SESSION_FILE);
   let currentState: BotState = loadStateFromFile(STATE_FILE);
   let offset = 0;
+  // Bounded dedup of inbound update_ids. Telegram has been observed to
+  // redeliver an update even after offset advanced past it; we skip the dup
+  // while still advancing offset as before.
+  const seen = new SeenUpdates(200);
 
   const slashDeps = {
     getSession: () => currentSessionId,
@@ -282,6 +360,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
       userInput,
       messageId: msg.message_id,
       turnOutbox,
+      isVoice: mediaAttachment?.kind === "voice",
     });
   }
 
@@ -290,8 +369,9 @@ export async function startBot(opts: StartOptions): Promise<void> {
   async function processMessage(op: {
     userInput: string;
     turnOutbox: string;
+    isVoice: boolean;
   }): Promise<void> {
-    const { userInput, turnOutbox } = op;
+    const { userInput, turnOutbox, isVoice } = op;
 
     const turnStartedAt = Date.now();
     await sendTyping();
@@ -354,6 +434,40 @@ export async function startBot(opts: StartOptions): Promise<void> {
       }
       await scratchpad.close();
       await sendMessage(result.reply || "(no reply)");
+
+      // Deterministic voice-on-voice: if the inbound turn was a voice memo and
+      // both ElevenLabs env vars are set, synthesize the text reply to speech
+      // and drop it in the outbox so the flush below sends it as a voice clip.
+      // Best-effort: a TTS failure logs and continues — the text reply already
+      // went out. We never clobber an agent-written clip (don't double-send),
+      // and the bot does the synthesis itself so this works in locked mode too.
+      // We write reply.ogg (OGG/Opus) so flushOutbox/sendAttachment routes it to
+      // Telegram's sendVoice (mp3 would fall through to sendDocument). The agent
+      // convention may still write reply.mp3, so we skip if EITHER exists.
+      const replyOgg = `${turnOutbox}/reply.ogg`;
+      const replyMp3 = `${turnOutbox}/reply.mp3`;
+      if (
+        shouldSynthesizeVoice(
+          isVoice,
+          Boolean(ELEVENLABS_API_KEY),
+          Boolean(ALBUS_VOICE_ID),
+          existsSync(replyOgg) || existsSync(replyMp3)
+        ) &&
+        (result.reply || "").trim()
+      ) {
+        try {
+          const ttsText = result.reply.slice(0, VOICE_SYNTH_MAX_CHARS);
+          const audio = await synthesizeSpeech(ttsText, {
+            voiceId: ALBUS_VOICE_ID!,
+            outputFormat: "opus_48000_64",
+          });
+          writeFileSync(replyOgg, audio);
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          console.error("voice synthesis failed:", errMsg);
+        }
+      }
+
       let outboxSent = 0;
       try {
         outboxSent = await flushOutbox(turnOutbox, { sendAttachment, sendMessage });
@@ -377,6 +491,26 @@ export async function startBot(opts: StartOptions): Promise<void> {
       if (shouldCompact(result.contextTokens, rec.turns ?? 0, rec.last_compact_turn)) {
         // Run before pending user messages, after this in-flight turn.
         queue.enqueueFront({ kind: "compact", contextTokens: result.contextTokens });
+      }
+
+      // Per-day spend guardrail (SOFT cap). Fold this turn's cost into the
+      // daily ledger (rolling over on date change), then if we've crossed the
+      // limit and haven't yet warned today, post a one-time warning. We do NOT
+      // refuse turns: a hard lock risks stranding the operator mid-task with no
+      // way to ask the bot to unlock itself. The warning is the signal; acting
+      // on it is the operator's call.
+      try {
+        const daily = recordDailyCost(DAILY_COST_FILE, result.costUsd);
+        if (overDailyLimit(daily, DAILY_COST_LIMIT_USD) && !daily.warned) {
+          markDailyWarned(DAILY_COST_FILE);
+          await sendMessage(
+            `⚠️ daily spend $${daily.cost_usd.toFixed(2)} over the $${DAILY_COST_LIMIT_USD.toFixed(2)} cap. Carrying on, but keep an eye on it.`,
+            { markdown: false }
+          );
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("daily-cost guardrail failed:", errMsg);
       }
 
       const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
@@ -486,12 +620,26 @@ export async function startBot(opts: StartOptions): Promise<void> {
       // deadlocked socket eventually stales out instead of refreshing forever.
       writeHeartbeat(HEARTBEAT_FILE);
       if (!data.ok) {
+        // On 429, honor Telegram's retry_after (capped) instead of the flat
+        // 5s so we back off correctly under rate limiting.
+        if (data.error_code === 429) {
+          const waitMs = getUpdatesBackoffMs(data.parameters?.retry_after);
+          console.warn(`getUpdates 429 rate-limited, waiting ${waitMs}ms`);
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
         console.error("getUpdates error:", data.description);
         await new Promise((r) => setTimeout(r, 5000));
         continue;
       }
       for (const update of data.result ?? []) {
+        // Always advance offset, even for dups, so we don't refetch them.
         offset = update.update_id + 1;
+        if (seen.isDuplicate(update.update_id)) {
+          console.warn(`skipping duplicate update_id=${update.update_id}`);
+          continue;
+        }
+        seen.add(update.update_id);
         await handleUpdate(update);
       }
     } catch (e) {

@@ -65,11 +65,32 @@ describe("synthesizeSpeech - happy path", () => {
 
     expect(Buffer.isBuffer(result)).toBe(true);
     expect(result.length).toBe(fake.length);
-    expect(captured.url).toBe("https://api.elevenlabs.io/v1/text-to-speech/abc123");
+    // Default output_format is mp3 (keeps tts.ts + mp3 consumers working).
+    expect(captured.url).toBe(
+      "https://api.elevenlabs.io/v1/text-to-speech/abc123?output_format=mp3_44100_128"
+    );
     expect(captured.headers["xi-api-key"]).toBe("sk_test_dummy");
+    expect(captured.headers["Accept"]).toBe("audio/mpeg");
     expect(captured.body.text).toBe("Hello");
     expect(captured.body.model_id).toBe("eleven_turbo_v2_5");
     expect(captured.body.voice_settings).toEqual({ stability: 0.5, similarity_boost: 0.75 });
+  });
+
+  test("opus outputFormat sets output_format query param and audio/ogg Accept", async () => {
+    process.env.ELEVENLABS_API_KEY = "sk_test_dummy";
+    let captured: { url?: string; headers?: any } = {};
+    globalThis.fetch = (async (input: any, init: any) => {
+      captured.url = String(input);
+      captured.headers = init?.headers;
+      return new Response(new Uint8Array([0x4f, 0x67, 0x67, 0x53]), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    await synthesizeSpeech("Hello", { voiceId: "abc123", outputFormat: "opus_48000_64" });
+
+    expect(captured.url).toBe(
+      "https://api.elevenlabs.io/v1/text-to-speech/abc123?output_format=opus_48000_64"
+    );
+    expect(captured.headers["Accept"]).toBe("audio/ogg");
   });
 
   test("custom modelId and voice_settings flow through", async () => {

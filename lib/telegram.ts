@@ -11,6 +11,48 @@ interface TgResponse<T = unknown> {
   ok: boolean;
   result?: T;
   description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number; migrate_to_chat_id?: number };
+}
+
+// Default wait (seconds) when Telegram returns 429 without a retry_after.
+const DEFAULT_RETRY_AFTER_S = 3;
+// Bound the retries so a persistent 429 doesn't wedge the loop forever.
+const MAX_429_RETRIES = 3;
+
+// Pure: how long to wait before retry `attempt` (0-based) of a 429. Prefers
+// Telegram's retry_after when present; otherwise exponential backoff off the
+// default (3s, 6s, 12s, ...), capped at 60s. Returns milliseconds.
+export function backoffDelayMs(attempt: number, retryAfterS?: number): number {
+  if (typeof retryAfterS === "number" && retryAfterS > 0) {
+    return Math.min(retryAfterS, 60) * 1000;
+  }
+  const secs = Math.min(DEFAULT_RETRY_AFTER_S * 2 ** attempt, 60);
+  return secs * 1000;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// POST/GET against the Telegram API with bounded 429 backoff. Returns the
+// parsed response on the first non-429 result (or after exhausting retries),
+// leaving ok/error inspection to callers.
+async function tgFetch<T>(
+  method: string,
+  init?: RequestInit
+): Promise<TgResponse<T>> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${TG_API}/${method}`, init);
+    const data = (await res.json()) as TgResponse<T>;
+    if (data.error_code === 429 && attempt < MAX_429_RETRIES) {
+      const waitMs = backoffDelayMs(attempt, data.parameters?.retry_after);
+      console.warn(
+        `tg ${method}: 429 rate-limited, waiting ${waitMs}ms (attempt ${attempt + 1}/${MAX_429_RETRIES})`
+      );
+      await sleep(waitMs);
+      continue;
+    }
+    return data;
+  }
 }
 
 interface TgFile {
@@ -23,12 +65,11 @@ interface TgFile {
 }
 
 export async function tg<T = unknown>(method: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${TG_API}/${method}`, {
+  const data = await tgFetch<T>(method, {
     method: body ? "POST" : "GET",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = (await res.json()) as TgResponse<T>;
   if (!data.ok) throw new Error(`tg ${method}: ${data.description || "unknown error"}`);
   return data.result as T;
 }
@@ -92,8 +133,7 @@ export async function sendAttachment(
   form.append("chat_id", String(CHAT_ID));
   form.append(fieldName, new Blob([buf]), fname);
   if (caption) form.append("caption", caption);
-  const res = await fetch(`${TG_API}/${method}`, { method: "POST", body: form });
-  const data = (await res.json()) as TgResponse;
+  const data = await tgFetch(method, { method: "POST", body: form });
   if (!data.ok) throw new Error(`${method}: ${data.description || "unknown error"}`);
   return data.result;
 }
