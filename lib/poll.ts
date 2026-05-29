@@ -348,9 +348,14 @@ export async function startBot(opts: StartOptions): Promise<void> {
         promptTokens: result.promptTokens,
         costUsd: result.costUsd,
       });
-      if (shouldCompact(result.promptTokens)) {
+      // Gate on RESIDENT size, not promptTokens. promptTokens is cumulative
+      // billed input across the whole turn — a multi-tool turn stacks cache
+      // reads into the millions and would trip the gate every time. residentTokens
+      // is one round-trip's view of the thread, which is what we actually want
+      // to keep under the context ceiling.
+      if (shouldCompact(result.residentTokens)) {
         // Run before pending user messages, after this in-flight turn.
-        queue.enqueueFront({ kind: "compact", promptTokens: result.promptTokens });
+        queue.enqueueFront({ kind: "compact", promptTokens: result.residentTokens });
       }
 
       const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
@@ -360,7 +365,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
           8
         )}, ` +
           `turns=${result.turns}, cost=$${result.cost.toFixed(4)}, ` +
-          `prompt_tokens=${result.promptTokens}, ` +
+          `prompt_tokens=${result.promptTokens}, resident=${result.residentTokens}, ` +
           `mode=${currentState.unlocked ? "unlocked" : "locked"}, ` +
           `tools=${scratchpad.toolCount()}, attachments=${outboxSent}, elapsed=${elapsedS}s`
       );

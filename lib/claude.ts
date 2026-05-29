@@ -22,7 +22,14 @@ export interface ClaudeTurnResult {
   sessionId: string | null;
   cost: number;
   turns: number;
+  // Cumulative billed input across every internal step in the turn. Right for
+  // cost, WRONG for "how big is the session" — a multi-tool turn re-reads the
+  // cache each step so this stacks far past resident size. Keep for accounting.
   promptTokens: number;
+  // Resident context size: the input-side total of the LAST message_start in
+  // the turn (one round-trip's view of the conversation). This is what to gate
+  // compaction on — it tracks thread growth, not per-turn billing churn.
+  residentTokens: number;
   contextWindow: number | null;
   costUsd: number;
 }
@@ -134,6 +141,10 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
       total_cost_usd?: number;
       num_turns?: number;
     } | null = null;
+    // Resident context size from the most recent message_start. Each step's
+    // message_start reports that round-trip's full input view; the last one is
+    // the peak resident size for the turn. Gated on for compaction in poll.ts.
+    let lastResidentTokens = 0;
     const pendingTools = new Map<number, { name: string; json: string }>();
 
     const timer = setTimeout(() => {
@@ -165,6 +176,11 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
       if (evt.type !== "stream_event") return;
       const inner = evt.event || {};
       if (inner.type === "message_start") {
+        const u = inner.message?.usage || {};
+        lastResidentTokens =
+          (u.input_tokens || 0) +
+          (u.cache_read_input_tokens || 0) +
+          (u.cache_creation_input_tokens || 0);
         pendingTools.clear();
         return;
       }
@@ -232,6 +248,7 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
         cost: fr.total_cost_usd || 0,
         turns: fr.num_turns || 0,
         promptTokens: usage.promptTokens,
+        residentTokens: lastResidentTokens,
         contextWindow: usage.contextWindow,
         costUsd: usage.costUsd,
       });
