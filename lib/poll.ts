@@ -8,6 +8,7 @@ import { mkdirSync } from "node:fs";
 import {
   CHAT_ID,
   COMPACT_TOKEN_THRESHOLD,
+  DEFAULT_MODEL,
   HEARTBEAT_FILE,
   OUTBOX_DIR,
   SESSION_FILE,
@@ -148,6 +149,13 @@ export async function startBot(opts: StartOptions): Promise<void> {
         kind: "compact",
         promptTokens: rec?.last_prompt_tokens ?? 0,
       });
+    },
+    setModel: (model: string | null) => {
+      const next: BotState = { ...currentState };
+      if (model) next.model = model;
+      else delete next.model;
+      currentState = next;
+      saveStateToFile(STATE_FILE, next);
     },
     sendMessage,
   };
@@ -291,6 +299,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
           onToolUse,
           outboxDir: turnOutbox,
           persona,
+          model: currentState.model ?? DEFAULT_MODEL,
         });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -314,6 +323,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
             onToolUse,
             outboxDir: turnOutbox,
             persona: recoveryPersona,
+            model: currentState.model ?? DEFAULT_MODEL,
           });
         } else {
           throw e;

@@ -81,6 +81,8 @@ export interface SpawnOptions {
   onToolUse: ToolUseCallback | null;
   outboxDir: string;
   persona: string;
+  // Resolved model id to pass via `--model`, or null for the CLI default.
+  model: string | null;
 }
 
 function buildOutboxBlock(outboxDir: string): string {
@@ -92,7 +94,8 @@ function buildOutboxBlock(outboxDir: string): string {
 }
 
 export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
-  const { input, sessionId, unlocked, onToolUse, outboxDir, persona } = opts;
+  const { input, sessionId, unlocked, onToolUse, outboxDir, persona, model } =
+    opts;
   return new Promise((resolveP, rejectP) => {
     const fullPersona =
       persona +
@@ -111,6 +114,9 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
       "--verbose",
       "--include-partial-messages",
     ];
+    if (model) {
+      args.push("--model", model);
+    }
     if (unlocked) {
       args.push("--dangerously-skip-permissions");
     } else {

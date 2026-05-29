@@ -17,7 +17,22 @@ export interface SlashDeps {
   // Queue a manual compaction pass. Runs on the serial turn queue (after any
   // in-flight turn), so this just signals intent; it does not block.
   requestCompact: () => void;
+  // Set (string) or clear (null) the per-bot model override. Persisted by the
+  // caller; takes effect on the next spawned turn.
+  setModel: (model: string | null) => void;
   sendMessage: (text: string, opts?: { markdown?: boolean }) => Promise<void>;
+}
+
+// Map a friendly model token ("opus", "opus 4.8", "claude-opus-4-8") to a
+// resolved model id. The match is by family substring, so both bare aliases
+// and full ids land on the same pinned id. Unknown tokens pass through
+// verbatim so future/explicit ids still work without a code change.
+export function resolveModelAlias(raw: string): string {
+  const norm = raw.trim().toLowerCase();
+  if (norm.includes("opus")) return "claude-opus-4-8";
+  if (norm.includes("sonnet")) return "claude-sonnet-4-6";
+  if (norm.includes("haiku")) return "claude-haiku-4-5-20251001";
+  return raw.trim();
 }
 
 // Render a created_at ISO timestamp as a friendly age like "2h 13m" or "45m"
@@ -93,6 +108,7 @@ export async function handleSlashCommand(
       const modeLine = state.unlocked
         ? `Mode: 🔓 UNLOCKED (full tools, since ${state.unlocked_at || "unknown"})`
         : "Mode: 🔒 LOCKED (read-only safe mode)";
+      const modelLine = `Model: ${state.model ? state.model : "default (opus 4.8)"}`;
 
       // Current-session stats. Each field degrades to a placeholder when the
       // record is absent or the field is missing (legacy files).
@@ -115,7 +131,29 @@ export async function handleSlashCommand(
         `Age: ${ageStr}`,
       ].join("\n");
 
-      await deps.sendMessage(`${sessionLine}\n${modeLine}\n\n${statsLines}`);
+      await deps.sendMessage(`${sessionLine}\n${modeLine}\n${modelLine}\n\n${statsLines}`);
+      return true;
+    }
+    case "/model": {
+      const arg = text.slice(cmd.length).trim();
+      const current = deps.getState();
+      if (!arg) {
+        const m = current.model;
+        await deps.sendMessage(
+          m
+            ? `Model: \`${m}\`\n\nChange with \`/model sonnet\` (or opus/haiku), \`/model default\` to clear.`
+            : "Model: default (opus 4.8, no override set).\n\nSet with `/model opus`, `/model sonnet`, or `/model haiku`."
+        );
+        return true;
+      }
+      if (/^(default|reset|clear|auto)$/i.test(arg)) {
+        deps.setModel(null);
+        await deps.sendMessage("Model override cleared. Back to the default (opus 4.8) on the next message.");
+        return true;
+      }
+      const model = resolveModelAlias(arg);
+      deps.setModel(model);
+      await deps.sendMessage(`Model set to \`${model}\`. Takes effect on the next message.`);
       return true;
     }
     case "/compact": {
@@ -140,6 +178,7 @@ export async function handleSlashCommand(
           "/reset or /new - clear the Claude session, fresh thread (Honcho memory stays).\n" +
           "/session or /status - show current session id, mode, and stats (turns, context size, cost, age).\n" +
           "/compact - manually trigger a compaction pass on the current session.\n" +
+          "/model - show the current model; `/model opus|sonnet|haiku` to switch, `/model default` to clear.\n" +
           "/help - this message.\n\n" +
           "Default mode is locked. Read-only by design - anything that touches the host or substrate needs an /unlock first."
       );

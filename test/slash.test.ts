@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { handleSlashCommand, type SlashDeps } from "../lib/slash.ts";
+import { handleSlashCommand, resolveModelAlias, type SlashDeps } from "../lib/slash.ts";
 import type { BotState, SessionRecord } from "../lib/state.ts";
 
 // Build a deps object with sensible defaults and capture sent messages plus
@@ -20,6 +20,7 @@ function makeDeps(over: Partial<SlashDeps> = {}): {
     requestCompact: () => {
       compactCalls++;
     },
+    setModel: () => {},
     sendMessage: async (text: string) => {
       sent.push(text);
     },
@@ -83,6 +84,60 @@ describe("/status stats", () => {
     // Missing fields render as a placeholder, not "undefined" or "NaN".
     expect(out).not.toContain("undefined");
     expect(out).not.toContain("NaN");
+  });
+});
+
+describe("resolveModelAlias", () => {
+  test("maps family aliases to pinned ids", () => {
+    expect(resolveModelAlias("opus")).toBe("claude-opus-4-8");
+    expect(resolveModelAlias("opus 4.8")).toBe("claude-opus-4-8");
+    expect(resolveModelAlias("Sonnet")).toBe("claude-sonnet-4-6");
+    expect(resolveModelAlias("haiku")).toBe("claude-haiku-4-5-20251001");
+  });
+  test("maps full ids back onto the same family id", () => {
+    expect(resolveModelAlias("claude-opus-4-8")).toBe("claude-opus-4-8");
+  });
+  test("passes unknown tokens through verbatim", () => {
+    expect(resolveModelAlias("claude-future-9")).toBe("claude-future-9");
+  });
+});
+
+describe("/model", () => {
+  test("shows the default when no override and no arg", async () => {
+    const { deps, sent } = makeDeps({ getState: () => ({ unlocked: false }) as BotState });
+    const handled = await handleSlashCommand("/model", deps);
+    expect(handled).toBe(true);
+    expect(sent.join("\n").toLowerCase()).toContain("default");
+  });
+
+  test("sets a resolved model from a friendly alias", async () => {
+    let saved: string | null | undefined;
+    const { deps, sent } = makeDeps({ setModel: (m) => { saved = m; } });
+    const handled = await handleSlashCommand("/model opus 4.8", deps);
+    expect(handled).toBe(true);
+    expect(saved).toBe("claude-opus-4-8");
+    expect(sent.join("\n")).toContain("claude-opus-4-8");
+  });
+
+  test("clears the override on /model default", async () => {
+    let saved: string | null | undefined = "claude-opus-4-8";
+    const { deps, sent } = makeDeps({
+      getState: () => ({ unlocked: false, model: "claude-opus-4-8" }) as BotState,
+      setModel: (m) => { saved = m; },
+    });
+    const handled = await handleSlashCommand("/model default", deps);
+    expect(handled).toBe(true);
+    expect(saved).toBeNull();
+    expect(sent.join("\n").toLowerCase()).toContain("cleared");
+  });
+
+  test("reports the current override when set and no arg", async () => {
+    const { deps, sent } = makeDeps({
+      getState: () => ({ unlocked: false, model: "claude-sonnet-4-6" }) as BotState,
+    });
+    const handled = await handleSlashCommand("/model", deps);
+    expect(handled).toBe(true);
+    expect(sent.join("\n")).toContain("claude-sonnet-4-6");
   });
 });
 

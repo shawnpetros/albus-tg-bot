@@ -22,6 +22,10 @@ export interface SessionRecord {
 export interface BotState {
   unlocked: boolean;
   unlocked_at?: string;
+  // Optional model override passed to `claude -p --model`. When absent, the
+  // CLI default applies. Set/cleared via the /model slash command. Stored as
+  // the resolved model id (e.g. "claude-opus-4-8"), not a friendly alias.
+  model?: string;
 }
 
 export function loadSession(file: string): string | null {

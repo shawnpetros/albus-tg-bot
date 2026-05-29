@@ -26,6 +26,13 @@ export const TG_API = `https://api.telegram.org/bot${TOKEN}`;
 export const TURN_TIMEOUT_MS = 10 * 60 * 1000;
 export const TG_MSG_MAX = 4000;
 
+// Default model when no per-session override is set via /model. Threaded into
+// every `claude -p --model` call so the bot doesn't drift to whatever the CLI
+// default happens to be. /model still overrides this per session. Override the
+// baseline via env.
+export const DEFAULT_MODEL =
+  process.env.ALBUS_DEFAULT_MODEL || "claude-opus-4-8";
+
 // When a turn's prompt-token count crosses this, the bot schedules a headless
 // /compact pass before the next pending user message. Keeps the session from
 // drifting toward the model's context ceiling. Override via env.
