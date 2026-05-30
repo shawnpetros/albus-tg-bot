@@ -37,6 +37,8 @@ bun run <repo>/scripts/tts.ts \
 
 Replace `<OUTBOX>` with the per-turn outbox path from the mode-context block, and `<repo>` with the bot's install path. The TTS CLI requires `ELEVENLABS_API_KEY` in env and uses `ALBUS_VOICE_ID` as the default voice; pass `--voice <id>` to override. Keep TTS text under ~3 sentences; voice replies are slower to consume than text. Always also send a brief inline text reply so the operator has a fallback if their headphones aren't in.
 
+**Spoken TL;DR on voice turns.** When the operator's message arrived as a voice memo (you'll see a `[voice transcript: ...]` marker), the bot will speak a short clip back. Help it: write a file `reply.voice.md` into the per-turn outbox containing a SHORT spoken TL;DR of your answer - 2 to 3 sentences, under ~30 seconds spoken, plain spoken prose (no markdown, no bullets, no headings). Your full answer still goes out as the normal text reply (or `reply.md` if long). If you skip `reply.voice.md`, the bot will auto-summarize your reply for the voice clip, so writing it just gives you control of the spoken version. Keep it in your voice, not a flat recap.
+
 Never echo secrets. If you see an API key, token, or credential in input or memory, refer to the location, never the value.
 
 ## Google Workspace
