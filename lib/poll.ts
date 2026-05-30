@@ -4,7 +4,7 @@
 // the slash router. Other modules stay pure or take dependencies; this is
 // where the orchestration happens.
 
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
 import {
   CHAT_ID,
   COMPACT_COOLDOWN_TURNS,
@@ -17,6 +17,8 @@ import {
   SESSION_FILE,
   STATE_FILE,
   TG_API,
+  VOICE_ACK_ENABLED,
+  VOICE_TLDR_MAX_CHARS,
 } from "./config.ts";
 import { writeHeartbeat } from "./heartbeat.ts";
 import {
@@ -46,6 +48,7 @@ import { handleSlashCommand } from "./slash.ts";
 import { transcribeAudio, synthesizeSpeech } from "./elevenlabs.ts";
 import { ELEVENLABS_API_KEY, ALBUS_VOICE_ID } from "./config.ts";
 import { TurnQueue } from "./queue.ts";
+import { quickAck, voiceSummary } from "./aside.ts";
 
 // --- Pure helpers (unit-tested in test/poll-helpers.test.ts) ---
 
@@ -323,6 +326,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
       if (await handleSlashCommand(msg.text!, slashDeps)) return;
     }
 
+    let voiceTranscript = "";
     let userInput: string;
     try {
       if (hasPhoto && msg.photo) {
@@ -348,7 +352,8 @@ export async function startBot(opts: StartOptions): Promise<void> {
           try {
             const t = await transcribeAudio(localPath);
             if (t.text.trim()) {
-              transcriptLine = `\n[voice transcript: ${t.text.trim()}]`;
+              voiceTranscript = t.text.trim();
+              transcriptLine = `\n[voice transcript: ${voiceTranscript}]`;
             }
           } catch (e) {
             const msgErr = e instanceof Error ? e.message : String(e);
@@ -369,6 +374,17 @@ export async function startBot(opts: StartOptions): Promise<void> {
     const turnOutbox = `${OUTBOX_DIR}/${msg.message_id}`;
     mkdirSync(turnOutbox, { recursive: true });
 
+    if (
+      mediaAttachment?.kind === "voice" &&
+      VOICE_ACK_ENABLED &&
+      voiceTranscript &&
+      ELEVENLABS_API_KEY &&
+      ALBUS_VOICE_ID
+    ) {
+      // Fire-and-forget: overlaps the queued heavy turn, lands in ~2-3s.
+      void fireAck(voiceTranscript, msg.message_id);
+    }
+
     // Hand the turn to the serial queue. Follow-ups fired during an in-flight
     // turn are buffered here and processed in order rather than dropped.
     queue.enqueue({
@@ -378,6 +394,32 @@ export async function startBot(opts: StartOptions): Promise<void> {
       turnOutbox,
       isVoice: mediaAttachment?.kind === "voice",
     });
+  }
+
+  // Best-effort, fire-and-forget in-character spoken ack. Runs as a stripped
+  // fast-model call that overlaps the queued heavy turn. Never throws into the
+  // caller; never blocks enqueue.
+  async function fireAck(transcript: string, messageId: number): Promise<void> {
+    const ackPath = `${OUTBOX_DIR}/ack-${messageId}.ogg`;
+    try {
+      const ackText = await quickAck(transcript);
+      if (!ackText.trim()) return;
+      const audio = await synthesizeSpeech(ackText, {
+        voiceId: ALBUS_VOICE_ID!,
+        outputFormat: "opus_48000_64",
+      });
+      writeFileSync(ackPath, audio);
+      await sendAttachment(ackPath);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("voice ack failed (non-fatal):", msg);
+    } finally {
+      try {
+        if (existsSync(ackPath)) unlinkSync(ackPath);
+      } catch {
+        /* temp cleanup is best-effort */
+      }
+    }
   }
 
   // --- Per-turn processing (one claude -p run; single-flight via the queue) ---
