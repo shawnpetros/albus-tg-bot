@@ -5,6 +5,7 @@ import {
   SeenUpdates,
   getUpdatesBackoffMs,
   shouldSynthesizeVoice,
+  selectVoiceText,
 } from "../lib/poll.ts";
 import { backoffDelayMs } from "../lib/telegram.ts";
 import {
@@ -163,5 +164,29 @@ describe("429 backoff delay", () => {
     expect(backoffDelayMs(2)).toBe(12_000);
     // Capped at 60s.
     expect(backoffDelayMs(10)).toBe(60_000);
+  });
+});
+
+describe("selectVoiceText (closing clip precedence)", () => {
+  const full = "A".repeat(2000);
+
+  test("prefers agent reply.voice.md", () => {
+    expect(
+      selectVoiceText({ agentVoiceMd: "spoken tldr", summary: "sum", fullReply: full, maxChars: 600 })
+    ).toBe("spoken tldr");
+  });
+  test("falls back to the summary when no voice.md", () => {
+    expect(
+      selectVoiceText({ agentVoiceMd: null, summary: "the summary", fullReply: full, maxChars: 600 })
+    ).toBe("the summary");
+  });
+  test("falls back to truncation when no voice.md and no summary", () => {
+    const out = selectVoiceText({ agentVoiceMd: null, summary: null, fullReply: full, maxChars: 600 });
+    expect(out).toBe("A".repeat(600));
+  });
+  test("returns null when there is nothing to say", () => {
+    expect(
+      selectVoiceText({ agentVoiceMd: "  ", summary: "", fullReply: "", maxChars: 600 })
+    ).toBeNull();
   });
 });

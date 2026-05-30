@@ -143,6 +143,22 @@ export function shouldSynthesizeVoice(
 // truncated; the full text still goes out as a message.
 export const VOICE_SYNTH_MAX_CHARS = 1500;
 
+// Pick the text for the closing voice clip, assuming we've already decided to
+// synthesize (shouldSynthesizeVoice == true). Precedence: agent-written
+// reply.voice.md, then the Haiku-generated summary, then a truncation of the
+// full reply. Returns null if there is genuinely nothing to speak.
+export function selectVoiceText(opts: {
+  agentVoiceMd: string | null;
+  summary: string | null;
+  fullReply: string;
+  maxChars: number;
+}): string | null {
+  if (opts.agentVoiceMd && opts.agentVoiceMd.trim()) return opts.agentVoiceMd.trim();
+  if (opts.summary && opts.summary.trim()) return opts.summary.trim();
+  const truncated = opts.fullReply.slice(0, opts.maxChars).trim();
+  return truncated || null;
+}
+
 // A unit of work for the serial turn queue. User messages are enqueued at the
 // tail; compaction is enqueueFront'd so it runs before pending messages but
 // after the in-flight turn.
