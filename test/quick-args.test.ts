@@ -16,7 +16,7 @@ describe("buildQuickArgs", () => {
   test("disables MCP", () => {
     const i = args.indexOf("--mcp-config");
     expect(i).toBeGreaterThanOrEqual(0);
-    expect(args[i + 1]).toBe("{}");
+    expect(args[i + 1]).toBe('{"mcpServers":{}}');
     expect(args).toContain("--strict-mcp-config");
   });
   test("passes the voice card as the system prompt", () => {

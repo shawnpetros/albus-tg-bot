@@ -365,7 +365,9 @@ export function buildQuickArgs(opts: { system: string; model: string }): string[
     "--setting-sources",
     "",
     "--mcp-config",
-    "{}",
+    // A valid-but-empty config: the CLI rejects bare "{}" ("Invalid MCP
+    // configuration"). With --strict-mcp-config this loads zero servers.
+    '{"mcpServers":{}}',
     "--strict-mcp-config",
   ];
 }
