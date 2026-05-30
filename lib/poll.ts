@@ -4,7 +4,7 @@
 // the slash router. Other modules stay pure or take dependencies; this is
 // where the orchestration happens.
 
-import { mkdirSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import {
   CHAT_ID,
   COMPACT_COOLDOWN_TURNS,
@@ -504,25 +504,54 @@ export async function startBot(opts: StartOptions): Promise<void> {
       // convention may still write reply.mp3, so we skip if EITHER exists.
       const replyOgg = `${turnOutbox}/reply.ogg`;
       const replyMp3 = `${turnOutbox}/reply.mp3`;
+      const replyVoiceMd = `${turnOutbox}/reply.voice.md`;
+      const agentWroteAudio = existsSync(replyOgg) || existsSync(replyMp3);
       if (
         shouldSynthesizeVoice(
           isVoice,
           Boolean(ELEVENLABS_API_KEY),
           Boolean(ALBUS_VOICE_ID),
-          existsSync(replyOgg) || existsSync(replyMp3)
+          agentWroteAudio
         ) &&
         (result.reply || "").trim()
       ) {
-        try {
-          const ttsText = result.reply.slice(0, VOICE_SYNTH_MAX_CHARS);
-          const audio = await synthesizeSpeech(ttsText, {
-            voiceId: ALBUS_VOICE_ID!,
-            outputFormat: "opus_48000_64",
-          });
-          writeFileSync(replyOgg, audio);
-        } catch (e) {
-          const errMsg = e instanceof Error ? e.message : String(e);
-          console.error("voice synthesis failed:", errMsg);
+        // Agent-written spoken TL;DR wins; only fall back to a Haiku summary
+        // when it is absent (saves a call when Albus already gave us one).
+        let agentVoiceMd: string | null = null;
+        if (existsSync(replyVoiceMd)) {
+          try {
+            agentVoiceMd = readFileSync(replyVoiceMd, "utf8").trim() || null;
+            try { unlinkSync(replyVoiceMd); } catch { /* best-effort */ }
+          } catch {
+            agentVoiceMd = null;
+          }
+        }
+        let summary: string | null = null;
+        if (!agentVoiceMd) {
+          try {
+            summary = await voiceSummary(result.reply);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn("voiceSummary failed, will truncate:", msg);
+          }
+        }
+        const spoken = selectVoiceText({
+          agentVoiceMd,
+          summary,
+          fullReply: result.reply,
+          maxChars: VOICE_TLDR_MAX_CHARS,
+        });
+        if (spoken) {
+          try {
+            const audio = await synthesizeSpeech(spoken, {
+              voiceId: ALBUS_VOICE_ID!,
+              outputFormat: "opus_48000_64",
+            });
+            writeFileSync(replyOgg, audio);
+          } catch (e) {
+            const errMsg = e instanceof Error ? e.message : String(e);
+            console.error("voice synthesis failed:", errMsg);
+          }
         }
       }
 
