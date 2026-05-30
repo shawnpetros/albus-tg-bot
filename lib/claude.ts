@@ -15,6 +15,7 @@ import {
   TURN_TIMEOUT_MS,
   LOCKED_MODE_PROMPT,
   UNLOCKED_MODE_PROMPT,
+  QUICK_TIMEOUT_MS,
 } from "./config.ts";
 
 export interface ClaudeTurnResult {
@@ -338,6 +339,83 @@ export function compactSession(sessionId: string): Promise<boolean> {
     child.on("close", (code: number | null) => finish(code === 0));
 
     // No input to send; /compact is driven entirely by the arg.
+    child.stdin?.end();
+  });
+}
+
+export interface QuickOptions {
+  input: string;
+  system: string;
+  model: string;
+}
+
+// Pure: the arg vector for a stripped, sessionless, toolless aside call.
+// No --resume (no session replay), empty --setting-sources (no skills),
+// --mcp-config '{}' + --strict-mcp-config (no MCP servers). These three are
+// the entire latency win; the system prompt (voice card) is essentially free.
+export function buildQuickArgs(opts: { system: string; model: string }): string[] {
+  return [
+    "-p",
+    "--append-system-prompt",
+    opts.system,
+    "--model",
+    opts.model,
+    "--output-format",
+    "json",
+    "--setting-sources",
+    "",
+    "--mcp-config",
+    "{}",
+    "--strict-mcp-config",
+  ];
+}
+
+// Run a stripped fast aside. Returns the reply text on a clean exit; rejects on
+// timeout, non-zero exit, or unparseable output. Callers treat it best-effort.
+export function spawnQuick(opts: QuickOptions): Promise<string> {
+  const { input, system, model } = opts;
+  return new Promise((resolveP, rejectP) => {
+    const child = spawn("claude", buildQuickArgs({ system, model }), {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectP(err);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      fail(new Error(`quick aside timed out after ${QUICK_TIMEOUT_MS / 1000}s`));
+    }, QUICK_TIMEOUT_MS);
+
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    child.on("error", (e: Error) => fail(e));
+    child.on("close", (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code !== 0) {
+        rejectP(new Error(`quick aside exited ${code}: ${stderr.slice(-300) || "no stderr"}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout) as { result?: string };
+        resolveP(parsed.result || "");
+      } catch {
+        rejectP(new Error(`quick aside: unparseable output: ${stdout.slice(0, 200)}`));
+      }
+    });
+
+    child.stdin?.write(input);
     child.stdin?.end();
   });
 }
