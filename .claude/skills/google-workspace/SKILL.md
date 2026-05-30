@@ -36,6 +36,23 @@ it is often faster for a simple ask. Use whichever gets the job done cleanly;
 prefer `gog` for plain sends/drafts and quick event creation, `gws` when you
 need a parameter or method `gog` does not expose.
 
+## Picking an account: gwsp
+
+`gws` is single-account and has no profile flag. To choose which Google account
+a command runs against, go through `gwsp`, a thin wrapper that points `gws` at
+the right per-account config dir:
+
+- `gwsp list` - show the configured profiles.
+- `gwsp <profile> <gws args...>` - run a gws command as that account.
+- `gwsp all <gws args...>` - run the same command across every profile, each
+  block labelled with its profile name. This is the "check both inboxes" move.
+
+Run `gwsp list` first when you are unsure which profiles exist. The bare
+`gws ...` examples below assume you have prefixed `gwsp <profile>` (or that the
+default profile is the one you want). When the operator distinguishes accounts
+("my personal", "the other one"), pick the matching profile rather than
+guessing. `gog` keeps its own `-a <email>` flag for the same purpose.
+
 ## How gws works
 
 ```
