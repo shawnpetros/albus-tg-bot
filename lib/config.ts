@@ -96,6 +96,23 @@ export const HEARTBEAT_STALE_SECS = 90;
 export const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 export const ALBUS_VOICE_ID = process.env.ALBUS_VOICE_ID;
 
+// --- Voice aside fast-path (see specs/2026-05-29-voice-memo-fast-path) ---
+// Kill switch for the voice ack + spoken-TLDR fast-path. Default on.
+export const VOICE_ACK_ENABLED =
+  (process.env.ALBUS_VOICE_ACK_ENABLED ?? "true").toLowerCase() !== "false";
+// Fixed fast model for both asides, independent of the session /model setting.
+export const VOICE_ASIDE_MODEL =
+  process.env.ALBUS_VOICE_ASIDE_MODEL || "claude-haiku-4-5";
+// Spoken TL;DR char cap (~30s of speech). Replaces the old 1500 truncation
+// for the summary path.
+export const VOICE_TLDR_MAX_CHARS =
+  Number(process.env.ALBUS_VOICE_TLDR_MAX_CHARS) || 600;
+// Hard timeout for an aside call. Asides are best-effort and must never hang.
+export const QUICK_TIMEOUT_MS =
+  Number(process.env.ALBUS_QUICK_TIMEOUT_MS) || 30_000;
+// The few-shot personality card both asides load as their system prompt.
+export const PERSONA_VOICE_PATH = resolve(PROJECT_ROOT, "persona-voice.md");
+
 // Locked-mode tool allowlist: pure read. Excludes anything that mutates host,
 // substrate, or external state. Memory writes (add_memories, delete_memories)
 // require /unlock so the substrate can't drift behind your back. TodoWrite is
