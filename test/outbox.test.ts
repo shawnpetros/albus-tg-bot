@@ -2,7 +2,8 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flushOutbox, type OutboxDeps } from "../lib/outbox.ts";
+import { flushOutbox, sweepOrphanOutboxes, type OutboxDeps } from "../lib/outbox.ts";
+import { utimesSync } from "node:fs";
 
 interface SendCall {
   path: string;
@@ -109,6 +110,63 @@ describe("flushOutbox - file delivery", () => {
     const { deps } = makeDeps();
     await flushOutbox(turnDir, deps);
     expect(existsSync(turnDir)).toBe(false);
+  });
+});
+
+describe("sweepOrphanOutboxes", () => {
+  // Age a path so it clears the min-age guard (utimes wants seconds).
+  function makeStale(path: string) {
+    const old = (Date.now() - 10 * 60 * 1000) / 1000;
+    utimesSync(path, old, old);
+  }
+
+  test("missing parent returns 0", async () => {
+    const { deps } = makeDeps();
+    expect(await sweepOrphanOutboxes(join(workDir, "nope"), turnDir, deps)).toBe(0);
+  });
+
+  test("delivers files from a stale orphan dir and removes it", async () => {
+    const orphan = join(workDir, "99");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "stranded.md"), "lost");
+    makeStale(orphan);
+    const { deps, sent } = makeDeps();
+    expect(await sweepOrphanOutboxes(workDir, turnDir, deps)).toBe(1);
+    expect(sent[0]?.path).toBe(join(orphan, "stranded.md"));
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  test("skips the current turn dir", async () => {
+    mkdirSync(turnDir, { recursive: true });
+    writeFileSync(join(turnDir, "current.md"), "keep");
+    makeStale(turnDir);
+    const { deps, sent } = makeDeps();
+    expect(await sweepOrphanOutboxes(workDir, turnDir, deps)).toBe(0);
+    expect(sent).toEqual([]);
+    expect(existsSync(turnDir)).toBe(true); // untouched by the sweep
+  });
+
+  test("skips dirs newer than minAge (possible in-flight turn)", async () => {
+    const fresh = join(workDir, "100");
+    mkdirSync(fresh, { recursive: true });
+    writeFileSync(join(fresh, "wip.md"), "in flight");
+    // not aged: mtime is ~now
+    const { deps, sent } = makeDeps();
+    expect(await sweepOrphanOutboxes(workDir, turnDir, deps)).toBe(0);
+    expect(sent).toEqual([]);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  test("ignores loose files (e.g. ack-*.ogg), only sweeps dirs", async () => {
+    writeFileSync(join(workDir, "ack-42.ogg"), "audio");
+    const orphan = join(workDir, "77");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "doc.pdf"), "x");
+    makeStale(orphan);
+    const { deps, sent } = makeDeps();
+    expect(await sweepOrphanOutboxes(workDir, turnDir, deps)).toBe(1);
+    expect(sent.map((s) => s.path)).toEqual([join(orphan, "doc.pdf")]);
+    expect(existsSync(join(workDir, "ack-42.ogg"))).toBe(true); // loose file untouched
   });
 });
 

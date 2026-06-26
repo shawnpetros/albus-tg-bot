@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
-// albus-tg-bot - Telegram surface for Albus.
+// albus-tg-bot - Telegram surface for Jarvis. (Repo/path names stay "albus-*"
+// as inert infrastructure; the persona/identity is Jarvis.)
 //
 // Long-polls Telegram getUpdates, spawns `claude -p` per message with
-// Honcho MCP memory access and the Albus persona, sends the response back.
+// Honcho MCP memory access and the Jarvis persona, sends the response back.
 //
 // This file is intentionally tiny. All the work happens in lib/:
 //   lib/config.ts     env vars, paths, constants, mode prompts
@@ -10,7 +11,7 @@
 //   lib/format.ts     CommonMark -> Telegram HTML converter
 //   lib/telegram.ts   tg/sendMessage/sendAttachment/sendTyping/downloadFile
 //   lib/outbox.ts     per-turn attachment dir flush
-//   lib/scratchpad.ts wizarding tool-call display lifecycle
+//   lib/scratchpad.ts tool-call display lifecycle
 //   lib/claude.ts     spawnAlbus subprocess + stream-json parser
 //   lib/slash.ts      /reset /lock /unlock /session /status /help router
 //   lib/poll.ts       handleUpdate + the main poll loop

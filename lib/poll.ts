@@ -15,11 +15,16 @@ import {
   HEARTBEAT_FILE,
   OUTBOX_DIR,
   SESSION_FILE,
+  SHOW_TELEMETRY,
   STATE_FILE,
   TG_API,
   VOICE_ACK_ENABLED,
   VOICE_TLDR_MAX_CHARS,
+  REACTIONS_ENABLED,
+  STREAM_REPLY_ENABLED,
+  STREAM_MIN_CHARS,
 } from "./config.ts";
+import { formatStatusLine } from "./telemetry.ts";
 import { writeHeartbeat } from "./heartbeat.ts";
 import {
   loadSession as loadSessionFromFile,
@@ -39,9 +44,10 @@ import {
   sendTyping,
   sendAttachment,
   downloadFile,
+  setReaction,
   tg,
 } from "./telegram.ts";
-import { flushOutbox } from "./outbox.ts";
+import { flushOutbox, sweepOrphanOutboxes } from "./outbox.ts";
 import { createScratchpad, describeToolCall } from "./scratchpad.ts";
 import { spawnAlbus, compactSession, type ToolUseCallback } from "./claude.ts";
 import { handleSlashCommand } from "./slash.ts";
@@ -385,6 +391,11 @@ export async function startBot(opts: StartOptions): Promise<void> {
       void fireAck(voiceTranscript, msg.message_id);
     }
 
+    // Acknowledge receipt with a 👀 reaction on the user's message. Turns to
+    // 👍 on success / 😱 on failure in processMessage. Best-effort, fire-and-
+    // forget; a status emoji must never gate the turn.
+    if (REACTIONS_ENABLED) void setReaction(msg.message_id, "👀");
+
     // Hand the turn to the serial queue. Follow-ups fired during an in-flight
     // turn are buffered here and processed in order rather than dropped.
     queue.enqueue({
@@ -426,10 +437,11 @@ export async function startBot(opts: StartOptions): Promise<void> {
 
   async function processMessage(op: {
     userInput: string;
+    messageId: number;
     turnOutbox: string;
     isVoice: boolean;
   }): Promise<void> {
-    const { userInput, turnOutbox, isVoice } = op;
+    const { userInput, messageId, turnOutbox, isVoice } = op;
 
     const turnStartedAt = Date.now();
     await sendTyping();
@@ -437,10 +449,21 @@ export async function startBot(opts: StartOptions): Promise<void> {
       sendTyping();
     }, 4000);
 
-    const scratchpad = createScratchpad({ chatId: Number(CHAT_ID), send: tg });
+    const scratchpad = createScratchpad({
+      chatId: Number(CHAT_ID),
+      send: tg,
+      minStreamChars: STREAM_MIN_CHARS,
+    });
     const onToolUse: ToolUseCallback = (name, args) => {
       scratchpad.onToolUse(describeToolCall(name, args));
     };
+    // Live reply preview: route streaming text deltas into the same live
+    // message the scratchpad uses, so the operator watches the reply form.
+    // Disabled cleanly by passing a null sink. The final formatted reply still
+    // comes from the result event; this is preview only.
+    const onText = STREAM_REPLY_ENABLED
+      ? (full: string) => scratchpad.streamText(full)
+      : null;
 
     // Tracks whether we already retried on a fresh session; used to surface the
     // real error (not a generic fizzle) once the retry also fails.
@@ -454,6 +477,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
           sessionId: currentSessionId,
           unlocked: currentState.unlocked,
           onToolUse,
+          onText,
           outboxDir: turnOutbox,
           persona,
           model: currentState.model ?? DEFAULT_MODEL,
@@ -467,7 +491,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
           currentSessionId = null;
           saveSessionToFile(SESSION_FILE, null);
           retried = true;
-          // Seed the fresh session with a recovery nudge so Albus recalls
+          // Seed the fresh session with a recovery nudge so Jarvis recalls
           // recent context from Honcho before answering. The persona already
           // grants Honcho access; this just points him at it.
           const recoveryPersona =
@@ -478,6 +502,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
             sessionId: null,
             unlocked: currentState.unlocked,
             onToolUse,
+            onText,
             outboxDir: turnOutbox,
             persona: recoveryPersona,
             model: currentState.model ?? DEFAULT_MODEL,
@@ -491,7 +516,43 @@ export async function startBot(opts: StartOptions): Promise<void> {
         saveSessionToFile(SESSION_FILE, currentSessionId);
       }
       await scratchpad.close();
-      await sendMessage(result.reply || "(no reply)");
+
+      // Fold the usage + cost ledgers BEFORE sending so the status line can
+      // carry session and daily totals that include this turn. Best-effort:
+      // accounting must never block the reply, so a ledger throw just drops the
+      // metrics from the footer (the reply, and the lock reminder, still go).
+      // last_prompt_tokens stores the TRUE context fill (contextTokens), so
+      // /status shows ~59k, not the cumulative millions.
+      let rec: ReturnType<typeof recordTurn> | null = null;
+      try {
+        rec = recordTurn(SESSION_FILE, {
+          promptTokens: result.contextTokens,
+          costUsd: result.costUsd,
+        });
+      } catch (e) {
+        console.error("recordTurn failed:", e instanceof Error ? e.message : String(e));
+      }
+      let daily: ReturnType<typeof recordDailyCost> | null = null;
+      try {
+        daily = recordDailyCost(DAILY_COST_FILE, result.costUsd);
+      } catch (e) {
+        console.error("daily-cost fold failed:", e instanceof Error ? e.message : String(e));
+      }
+
+      const footer = formatStatusLine({
+        unlocked: currentState.unlocked,
+        showMetrics: SHOW_TELEMETRY,
+        contextTokens: result.contextTokens,
+        contextWindow: result.contextWindow,
+        passCostUsd: result.costUsd,
+        sessionCostUsd: rec?.total_cost_usd ?? result.costUsd,
+        dailyCostUsd: daily?.cost_usd ?? result.costUsd,
+      });
+      const replyBody = result.reply || "(no reply)";
+      await sendMessage(footer ? `${replyBody}\n\n${footer}` : replyBody);
+
+      // Flip the receipt 👀 to 👍 now the reply has landed. Best-effort.
+      if (REACTIONS_ENABLED) void setReaction(messageId, "👍");
 
       // Deterministic voice-on-voice: if the inbound turn was a voice memo and
       // both ElevenLabs env vars are set, synthesize the text reply to speech
@@ -516,7 +577,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
         (result.reply || "").trim()
       ) {
         // Agent-written spoken TL;DR wins; only fall back to a Haiku summary
-        // when it is absent (saves a call when Albus already gave us one).
+        // when it is absent (saves a call when Jarvis already gave us one).
         let agentVoiceMd: string | null = null;
         if (existsSync(replyVoiceMd)) {
           try {
@@ -558,46 +619,43 @@ export async function startBot(opts: StartOptions): Promise<void> {
       let outboxSent = 0;
       try {
         outboxSent = await flushOutbox(turnOutbox, { sendAttachment, sendMessage });
+        // Rescue any orphaned turn dirs (a prior path slip stranded files there).
+        outboxSent += await sweepOrphanOutboxes(OUTBOX_DIR, turnOutbox, {
+          sendAttachment,
+          sendMessage,
+        });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.error("flushOutbox failed:", errMsg);
       }
 
-      // Usage accounting against the current session, then a gated compaction
-      // check. last_prompt_tokens stores the TRUE context fill (contextTokens),
-      // so /status shows ~59k, not the cumulative millions.
-      const rec = recordTurn(SESSION_FILE, {
-        promptTokens: result.contextTokens,
-        costUsd: result.costUsd,
-      });
+      // Gated compaction check, off the session record folded before the send.
       // Gate on contextTokens (the true fill: last assistant message's
       // input-side total), NOT result.promptTokens. promptTokens is cumulative
       // billed input across the whole turn — a multi-tool turn stacks cache
       // reads into the millions and would false-fire the gate every time. The
       // cooldown is a backstop against thrashing near the threshold.
-      if (shouldCompact(result.contextTokens, rec.turns ?? 0, rec.last_compact_turn)) {
+      if (rec && shouldCompact(result.contextTokens, rec.turns ?? 0, rec.last_compact_turn)) {
         // Run before pending user messages, after this in-flight turn.
         queue.enqueueFront({ kind: "compact", contextTokens: result.contextTokens });
       }
 
-      // Per-day spend guardrail (SOFT cap). Fold this turn's cost into the
-      // daily ledger (rolling over on date change), then if we've crossed the
-      // limit and haven't yet warned today, post a one-time warning. We do NOT
-      // refuse turns: a hard lock risks stranding the operator mid-task with no
-      // way to ask the bot to unlock itself. The warning is the signal; acting
-      // on it is the operator's call.
-      try {
-        const daily = recordDailyCost(DAILY_COST_FILE, result.costUsd);
-        if (overDailyLimit(daily, DAILY_COST_LIMIT_USD) && !daily.warned) {
+      // Per-day spend guardrail (SOFT cap), off the daily ledger folded before
+      // the send. If we've crossed the limit and haven't yet warned today, post
+      // a one-time warning. We do NOT refuse turns: a hard lock risks stranding
+      // the operator mid-task with no way to ask the bot to unlock itself. The
+      // warning is the signal; acting on it is the operator's call.
+      if (daily && overDailyLimit(daily, DAILY_COST_LIMIT_USD) && !daily.warned) {
+        try {
           markDailyWarned(DAILY_COST_FILE);
           await sendMessage(
             `⚠️ daily spend $${daily.cost_usd.toFixed(2)} over the $${DAILY_COST_LIMIT_USD.toFixed(2)} cap. Carrying on, but keep an eye on it.`,
             { markdown: false }
           );
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          console.error("daily-cost warning failed:", errMsg);
         }
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        console.error("daily-cost guardrail failed:", errMsg);
       }
 
       const elapsedS = ((Date.now() - turnStartedAt) / 1000).toFixed(1);
@@ -614,6 +672,9 @@ export async function startBot(opts: StartOptions): Promise<void> {
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error("turn failed:", errMsg);
+      // Flip the receipt 👀 to 😱 so the failure is visible on the message
+      // itself, not just in the fizzle reply. Best-effort.
+      if (REACTIONS_ENABLED) void setReaction(messageId, "😱");
       // Surface the REAL error. If we already retried on a fresh session and
       // still failed, say so and include the actual message — don't swallow it
       // behind a generic fizzle.

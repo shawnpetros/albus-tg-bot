@@ -170,7 +170,7 @@ export async function handleSlashCommand(
     }
     case "/help": {
       await deps.sendMessage(
-        "Albus bot commands:\n\n" +
+        "Jarvis bot commands:\n\n" +
           "🔒 / 🔓  mode switcher\n" +
           "/unlock - switch to full tools (Bash, Edit, Write, etc.). Replies will end with a \"still unlocked - /lock when done\" reminder.\n" +
           "/lock or /relock - switch back to read-only safe mode.\n\n" +

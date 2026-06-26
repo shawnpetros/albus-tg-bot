@@ -109,6 +109,27 @@ export async function sendTyping(): Promise<void> {
   }
 }
 
+// Set (or clear) a reaction on a message. Pass a single emoji from Telegram's
+// fixed reaction set (👀 👍 😱 etc.); pass null/"" to clear all reactions.
+// Best-effort: a reaction is pure UI affordance, so failures are swallowed,
+// never letting a status emoji break a turn. Setting a new reaction replaces any
+// prior one (Telegram allows one reaction per message for bots).
+export async function setReaction(
+  messageId: number,
+  emoji: string | null
+): Promise<void> {
+  try {
+    await tg("setMessageReaction", {
+      chat_id: Number(CHAT_ID),
+      message_id: messageId,
+      reaction: emoji ? [{ type: "emoji", emoji }] : [],
+    });
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    console.warn("setReaction failed (non-fatal):", m);
+  }
+}
+
 // Route attachments by extension. Images go via sendPhoto for the inline
 // preview; voice (.ogg/.oga/.opus) via sendVoice for the native mic UI;
 // everything else as sendDocument.

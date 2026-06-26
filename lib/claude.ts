@@ -120,11 +120,20 @@ export type ToolUseCallback = (
   args: Record<string, unknown>
 ) => void;
 
+// Fired for each assistant text delta as it streams. The argument is the
+// FULL accumulated reply text so far (not just the new fragment), so consumers
+// can render a rolling preview without tracking their own buffer.
+export type TextStreamCallback = (fullText: string) => void;
+
 export interface SpawnOptions {
   input: string;
   sessionId: string | null;
   unlocked: boolean;
   onToolUse: ToolUseCallback | null;
+  // Optional live-text sink. When present, called on each text_delta with the
+  // accumulated reply so far. The final reply still comes from the result
+  // event. This is purely for a live preview, never the source of truth.
+  onText?: TextStreamCallback | null;
   outboxDir: string;
   persona: string;
   // Resolved model id to pass via `--model`, or null for the CLI default.
@@ -140,7 +149,7 @@ function buildOutboxBlock(outboxDir: string): string {
 }
 
 export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
-  const { input, sessionId, unlocked, onToolUse, outboxDir, persona, model } =
+  const { input, sessionId, unlocked, onToolUse, onText, outboxDir, persona, model } =
     opts;
   return new Promise((resolveP, rejectP) => {
     const fullPersona =
@@ -186,6 +195,10 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
     // list so the helper stays pure/testable rather than us pre-reducing here.
     const assistantUsages: AssistantUsage[] = [];
     const pendingTools = new Map<number, { name: string; json: string }>();
+    // Accumulated text of the CURRENT assistant message, reset on each
+    // message_start. Drives the optional onText live preview; never the
+    // source of truth for the final reply (that's the result event).
+    let streamedText = "";
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -225,6 +238,24 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
           });
         }
         pendingTools.clear();
+        // Reset the live-preview buffer so it tracks the CURRENT message,
+        // keeping the preview aligned with what becomes the final reply
+        // rather than concatenating earlier interim narration.
+        streamedText = "";
+        return;
+      }
+      if (
+        inner.type === "content_block_delta" &&
+        inner.delta?.type === "text_delta" &&
+        onText
+      ) {
+        streamedText += inner.delta.text || "";
+        try {
+          onText(streamedText);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn("onText threw:", msg);
+        }
         return;
       }
       if (inner.type === "content_block_start" && inner.content_block?.type === "tool_use") {

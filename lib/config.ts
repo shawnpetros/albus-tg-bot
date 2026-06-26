@@ -75,6 +75,15 @@ export const MCP_CONFIG = resolveMcpConfig();
 // via env.
 export const DAILY_COST_LIMIT_USD = Number(process.env.ALBUS_DAILY_COST_USD) || 20;
 
+// Telemetry footer: append a context/cost status line to every reply. Default
+// ON. Set ALBUS_SHOW_TELEMETRY=false (or 0) to mute the cost/context numbers.
+// The lock-state reminder still shows when unlocked regardless. Prep for the
+// raw-API-cost era: surface spend per pass / session / day at a glance.
+export const SHOW_TELEMETRY =
+  !["false", "0", "off", "no"].includes(
+    (process.env.ALBUS_SHOW_TELEMETRY ?? "true").toLowerCase()
+  );
+
 // State paths
 export const STATE_DIR = `${homedir()}/.albus-tg-bot`;
 export const SESSION_FILE = `${STATE_DIR}/session.json`;
@@ -113,6 +122,27 @@ export const QUICK_TIMEOUT_MS =
 // The few-shot personality card both asides load as their system prompt.
 export const PERSONA_VOICE_PATH = resolve(PROJECT_ROOT, "persona-voice.md");
 
+// --- Agent-native Telegram surface (reactions + reply streaming) ---
+// Message reactions as turn status: 👀 on receive, 👍 on success, 😱 on
+// failure. Cheap, very "agent-native". Default on; set ALBUS_REACTIONS=false
+// to mute. The setMessageReaction emoji must come from Telegram's fixed set.
+export const REACTIONS_ENABLED =
+  (process.env.ALBUS_REACTIONS ?? "true").toLowerCase() !== "false";
+
+// Live reply streaming: while the model writes, edit the existing live message
+// (the same one the scratchpad uses for tool progress) with a rolling preview
+// of the reply as it forms, then finalize with the clean formatted version.
+// Default on; set ALBUS_STREAM_REPLY=false to disable. The text deltas already
+// flow from `claude -p --include-partial-messages`; this just surfaces them.
+export const STREAM_REPLY_ENABLED =
+  (process.env.ALBUS_STREAM_REPLY ?? "true").toLowerCase() !== "false";
+
+// Don't open a streaming preview for short replies. A one-liner that arrives
+// whole is snappier than open→edit→delete→resend flicker. Only start the live
+// preview once the accumulated reply text crosses this many characters.
+export const STREAM_MIN_CHARS =
+  Number(process.env.ALBUS_STREAM_MIN_CHARS) || 240;
+
 // Locked-mode tool allowlist: pure read. Excludes anything that mutates host,
 // substrate, or external state. Memory writes (add_memories, delete_memories)
 // require /unlock so the substrate can't drift behind your back. TodoWrite is
@@ -147,8 +177,6 @@ export const UNLOCKED_MODE_PROMPT = `
 --- Mode context (auto-injected by the bot harness, do not include in reply) ---
 You are currently in **🔓 UNLOCKED mode**. Full tools available: Bash, Edit, Write, the full Honcho memory surface (\`mcp__honcho__*\`, including writes), the works. Use \`--dangerously-skip-permissions\`-equivalent agency on the host machine.
 
-**Always append this exact line as the LAST line of your reply** (after a blank line, no other formatting):
+**Do NOT append a lock/unlock footer yourself.** The bot harness now appends a status line (lock state, context fill, cost) to the end of every reply automatically. Adding your own would duplicate it. Just answer and stop.
 
-🔓 still unlocked - \`/lock\` when done
-
-This is non-negotiable: every reply while unlocked ends with that line so the operator doesn't forget to relock. If you skip it, the bot is less safe. If a destructive action is part of the task (rm, drop, send, push, force, money, public-post), name what you're about to do BEFORE doing it and pause for a confirmation if you're not sure.`;
+If a destructive action is part of the task (rm, drop, send, push, force, money, public-post), name what you're about to do BEFORE doing it and pause for a confirmation if you're not sure.`;
