@@ -7,12 +7,12 @@
 //   bun run scripts/tts.ts --text "Hello, friend." --out /path/to/reply.mp3
 //   echo "Hello" | bun run scripts/tts.ts --out /path/to/reply.mp3
 //
-// Requires ELEVENLABS_API_KEY in env. Voice defaults to ALBUS_VOICE_ID
-// (the Jarvis/Friday cloned voice) unless --voice is passed explicitly.
+// Requires ELEVENLABS_API_KEY in env. Voice defaults to VOICE_ID
+// unless --voice is passed explicitly.
 
 import { writeFileSync } from "node:fs";
 import { synthesizeSpeech } from "../lib/elevenlabs.ts";
-import { ALBUS_VOICE_ID } from "../lib/config.ts";
+import { VOICE_ID } from "../lib/config.ts";
 
 function parseArgs(argv: string[]): { text?: string; out?: string; voice?: string } {
   const out: { text?: string; out?: string; voice?: string } = {};
@@ -44,7 +44,7 @@ function printUsage(): void {
       "Options:\n" +
       "  --text  TEXT     Inline text (else reads stdin)\n" +
       "  --out   PATH     Output mp3 path (required)\n" +
-      "  --voice ID       ElevenLabs voice id (default: ALBUS_VOICE_ID)\n"
+      "  --voice ID       ElevenLabs voice id (default: VOICE_ID)\n"
   );
 }
 
@@ -66,10 +66,10 @@ async function main(): Promise<void> {
     console.error("ERROR: no text supplied (use --text or pipe to stdin)");
     process.exit(2);
   }
-  const voiceId = args.voice ?? ALBUS_VOICE_ID;
+  const voiceId = args.voice ?? VOICE_ID;
   if (!voiceId) {
     console.error(
-      "ERROR: no voice id (pass --voice or set ALBUS_VOICE_ID in env)"
+      "ERROR: no voice id (pass --voice or set VOICE_ID in env)"
     );
     process.exit(2);
   }

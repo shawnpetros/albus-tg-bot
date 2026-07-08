@@ -40,7 +40,7 @@ let workDir: string;
 let turnDir: string;
 
 beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), "albus-outbox-"));
+  workDir = mkdtempSync(join(tmpdir(), "tgclaude-outbox-"));
   turnDir = join(workDir, "42");
 });
 

@@ -14,7 +14,7 @@ let tmpDir: string;
 let heartbeatFile: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "albus-hb-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "tgclaude-hb-"));
   heartbeatFile = join(tmpDir, "heartbeat");
 });
 

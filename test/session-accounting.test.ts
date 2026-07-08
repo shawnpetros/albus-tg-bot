@@ -14,7 +14,7 @@ let tmpDir: string;
 let sessionFile: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "albus-acct-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "tgclaude-acct-"));
   sessionFile = join(tmpDir, "session.json");
 });
 

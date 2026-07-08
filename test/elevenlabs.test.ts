@@ -11,7 +11,7 @@ let tmpDir: string;
 beforeEach(() => {
   origFetch = globalThis.fetch;
   origKey = process.env.ELEVENLABS_API_KEY;
-  tmpDir = mkdtempSync(join(tmpdir(), "albus-11l-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "tgclaude-11l-"));
 });
 
 afterEach(() => {

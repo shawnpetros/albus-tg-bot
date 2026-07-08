@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.YOUR_DOMAIN.albus-tg-bot</string>
+    <string>com.YOUR_DOMAIN.tgclaude</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/YOUR_USERNAME/projects/albus-tg-bot/launchd/run.sh</string>
+        <string>/Users/YOUR_USERNAME/projects/tgclaude/launchd/run.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/YOUR_USERNAME/projects/albus-tg-bot</string>
+    <string>/Users/YOUR_USERNAME/projects/tgclaude</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -19,7 +19,7 @@
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>/Users/YOUR_USERNAME</string>
-        <!-- ALBUS_BOT_TOKEN, ALBUS_BOT_CHAT_ID, ANTHROPIC_API_KEY come from
+        <!-- TGCLAUDE_BOT_TOKEN, TGCLAUDE_BOT_CHAT_ID, ANTHROPIC_API_KEY come from
              ~/.exports via run.sh wrapper. Secrets stay in env, never inlined. -->
     </dict>
 
@@ -37,10 +37,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOUR_USERNAME/.albus-tg-bot/stdout.log</string>
+    <string>/Users/YOUR_USERNAME/.tgclaude/stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/YOUR_USERNAME/.albus-tg-bot/stderr.log</string>
+    <string>/Users/YOUR_USERNAME/.tgclaude/stderr.log</string>
 
     <key>ThrottleInterval</key>
     <integer>10</integer>

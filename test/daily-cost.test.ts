@@ -51,7 +51,7 @@ describe("daily-cost persistence", () => {
   let file: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "albus-daily-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "tgclaude-daily-"));
     file = join(tmpDir, "daily-cost.json");
   });
   afterEach(() => {

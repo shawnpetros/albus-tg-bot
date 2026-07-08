@@ -32,7 +32,7 @@ export interface Scratchpad {
   toolCount: () => number;
 }
 
-// Tool-name to Jarvis-flavour mapping. Pure; safe to call standalone.
+// Tool-name to display-line mapping. Pure; safe to call standalone.
 // Lives here because the scratchpad is the only caller today; if a second
 // caller ever shows up it can move to its own module.
 export function describeToolCall(

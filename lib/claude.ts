@@ -148,7 +148,7 @@ function buildOutboxBlock(outboxDir: string): string {
   );
 }
 
-export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
+export function spawnClaude(opts: SpawnOptions): Promise<ClaudeTurnResult> {
   const { input, sessionId, unlocked, onToolUse, onText, outboxDir, persona, model } =
     opts;
   return new Promise((resolveP, rejectP) => {
@@ -342,7 +342,7 @@ export function spawnAlbus(opts: SpawnOptions): Promise<ClaudeTurnResult> {
 // the same session_id, so on success the caller's session file needs no
 // change. Resolves true on a clean exit, false on timeout or non-zero exit
 // (the caller treats a false as non-fatal and carries on). Uses the same
-// SIGKILL-on-timeout guard as spawnAlbus.
+// SIGKILL-on-timeout guard as spawnClaude.
 export function compactSession(sessionId: string): Promise<boolean> {
   return new Promise((resolveP) => {
     const args = [

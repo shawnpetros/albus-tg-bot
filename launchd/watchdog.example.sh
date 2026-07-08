@@ -1,5 +1,5 @@
 #!/bin/bash
-# Watchdog for albus-tg-bot. Runs every 60s via its own launchd job.
+# Watchdog for tgclaude. Runs every 60s via its own launchd job.
 # Reads the heartbeat file mtime; if the bot hasn't stamped it within
 # the stale threshold, force-restarts the bot via launchctl kickstart.
 #
@@ -10,10 +10,10 @@
 
 set -eo pipefail
 
-HEARTBEAT_FILE="$HOME/.albus-tg-bot/heartbeat"
+HEARTBEAT_FILE="$HOME/.tgclaude/heartbeat"
 STALE_SECS=90
-BOT_LABEL="com.YOUR_DOMAIN.albus-tg-bot"
-LOG="$HOME/.albus-tg-bot/watchdog.log"
+BOT_LABEL="com.YOUR_DOMAIN.tgclaude"
+LOG="$HOME/.tgclaude/watchdog.log"
 
 log() {
   echo "[$(date '+%F %T')] $*" >> "$LOG"

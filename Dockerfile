@@ -1,7 +1,7 @@
-# Sandbox image for running albus-tg-bot tests in isolation.
+# Sandbox image for running tgclaude tests in isolation.
 # Production runs via launchd on the host with bun installed natively;
 # this image is purely for `bun test` against the lib/ modules without
-# touching the host's ~/.albus-tg-bot state dir.
+# touching the host's ~/.tgclaude state dir.
 
 FROM oven/bun:1.3-alpine
 

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.YOUR_DOMAIN.albus-watchdog</string>
+    <string>com.YOUR_DOMAIN.tgclaude-watchdog</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/YOUR_USERNAME/projects/albus-tg-bot/launchd/watchdog.sh</string>
+        <string>/Users/YOUR_USERNAME/projects/tgclaude/launchd/watchdog.sh</string>
     </array>
 
     <!-- Run every 60 seconds. The watchdog itself is cheap (stat + maybe
@@ -28,9 +28,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOUR_USERNAME/.albus-tg-bot/watchdog.log</string>
+    <string>/Users/YOUR_USERNAME/.tgclaude/watchdog.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/YOUR_USERNAME/.albus-tg-bot/watchdog.log</string>
+    <string>/Users/YOUR_USERNAME/.tgclaude/watchdog.log</string>
 </dict>
 </plist>

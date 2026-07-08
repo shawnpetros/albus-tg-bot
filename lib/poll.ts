@@ -49,10 +49,10 @@ import {
 } from "./telegram.ts";
 import { flushOutbox, sweepOrphanOutboxes } from "./outbox.ts";
 import { createScratchpad, describeToolCall } from "./scratchpad.ts";
-import { spawnAlbus, compactSession, type ToolUseCallback } from "./claude.ts";
+import { spawnClaude, compactSession, type ToolUseCallback } from "./claude.ts";
 import { handleSlashCommand } from "./slash.ts";
 import { transcribeAudio, synthesizeSpeech } from "./elevenlabs.ts";
-import { ELEVENLABS_API_KEY, ALBUS_VOICE_ID } from "./config.ts";
+import { ELEVENLABS_API_KEY, VOICE_ID } from "./config.ts";
 import { TurnQueue } from "./queue.ts";
 import { quickAck, voiceSummary } from "./aside.ts";
 
@@ -385,7 +385,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
       VOICE_ACK_ENABLED &&
       voiceTranscript &&
       ELEVENLABS_API_KEY &&
-      ALBUS_VOICE_ID
+      VOICE_ID
     ) {
       // Fire-and-forget: overlaps the queued heavy turn, lands in ~2-3s.
       void fireAck(voiceTranscript, msg.message_id);
@@ -416,7 +416,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
       const ackText = await quickAck(transcript);
       if (!ackText.trim()) return;
       const audio = await synthesizeSpeech(ackText, {
-        voiceId: ALBUS_VOICE_ID!,
+        voiceId: VOICE_ID!,
         outputFormat: "opus_48000_64",
       });
       writeFileSync(ackPath, audio);
@@ -472,7 +472,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
     try {
       let result;
       try {
-        result = await spawnAlbus({
+        result = await spawnClaude({
           input: userInput,
           sessionId: currentSessionId,
           unlocked: currentState.unlocked,
@@ -491,13 +491,13 @@ export async function startBot(opts: StartOptions): Promise<void> {
           currentSessionId = null;
           saveSessionToFile(SESSION_FILE, null);
           retried = true;
-          // Seed the fresh session with a recovery nudge so Jarvis recalls
-          // recent context from Honcho before answering. The persona already
-          // grants Honcho access; this just points him at it.
+          // Seed the fresh session with a recovery nudge so the assistant
+          // recalls recent context from long-term memory (if attached)
+          // before answering.
           const recoveryPersona =
             persona +
-            "\n\n(Recovering from an interrupted session, briefly recall recent context from Honcho before continuing.)";
-          result = await spawnAlbus({
+            "\n\n(Recovering from an interrupted session. If a long-term memory MCP is attached, briefly recall recent context from it before continuing.)";
+          result = await spawnClaude({
             input: userInput,
             sessionId: null,
             unlocked: currentState.unlocked,
@@ -571,13 +571,13 @@ export async function startBot(opts: StartOptions): Promise<void> {
         shouldSynthesizeVoice(
           isVoice,
           Boolean(ELEVENLABS_API_KEY),
-          Boolean(ALBUS_VOICE_ID),
+          Boolean(VOICE_ID),
           agentWroteAudio
         ) &&
         (result.reply || "").trim()
       ) {
         // Agent-written spoken TL;DR wins; only fall back to a Haiku summary
-        // when it is absent (saves a call when Jarvis already gave us one).
+        // when it is absent (saves a call when the model already gave us one).
         let agentVoiceMd: string | null = null;
         if (existsSync(replyVoiceMd)) {
           try {
@@ -605,7 +605,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
         if (spoken) {
           try {
             const audio = await synthesizeSpeech(spoken, {
-              voiceId: ALBUS_VOICE_ID!,
+              voiceId: VOICE_ID!,
               outputFormat: "opus_48000_64",
             });
             writeFileSync(replyOgg, audio);
@@ -746,7 +746,7 @@ export async function startBot(opts: StartOptions): Promise<void> {
   );
 
   console.log(
-    `albus-tg-bot started, watching chat_id=${CHAT_ID}, ` +
+    `tgclaude started, watching chat_id=${CHAT_ID}, ` +
       `session=${
         currentSessionId
           ? currentSessionId.slice(0, 8) + "..."

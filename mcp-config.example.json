@@ -1,14 +1,5 @@
 {
-  "_comment": "Copy this to ~/.config/albus/mcp-config.json and edit. Or set ALBUS_MCP_CONFIG to point at your own path. The bot resolves in this order: env var → ~/.config/albus/mcp-config.json → this example as last-resort fallback.",
-  "_honcho_hint": "The bot uses Honcho as its long-term memory backend, addressed as mcp__honcho__*. Replace the command/args/env below with your own Honcho MCP server invocation. Set HONCHO_API_KEY (and any base URL / workspace) to your real values. Do NOT commit real keys to this file.",
-  "mcpServers": {
-    "honcho": {
-      "type": "stdio",
-      "command": "REPLACE_WITH_HONCHO_MCP_COMMAND",
-      "args": ["REPLACE_WITH_HONCHO_MCP_ARGS"],
-      "env": {
-        "HONCHO_API_KEY": "REPLACE_WITH_YOUR_HONCHO_API_KEY"
-      }
-    }
-  }
+  "_comment": "Copy this to ~/.config/tgclaude/mcp-config.json and edit. Or set TGCLAUDE_MCP_CONFIG to point at your own path. The bot resolves in this order: env var → ~/.config/tgclaude/mcp-config.json → this example as last-resort fallback.",
+  "_memory_hint": "Attach whatever MCP servers you want the bot's Claude sessions to see - a long-term memory backend is the classic choice. To keep a memory server's read-only tools available in locked mode, list them in TGCLAUDE_LOCKED_MCP_TOOLS (comma-separated, e.g. mcp__mymemory__search). Do NOT commit real keys to this file.",
+  "mcpServers": {}
 }

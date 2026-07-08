@@ -1,7 +1,7 @@
 // ElevenLabs wrappers for text-to-speech and speech-to-text.
 //
 // Both calls require ELEVENLABS_API_KEY in the env. Voice IDs come from
-// the caller; for Jarvis's voice see ALBUS_VOICE_ID in
+// the caller; for the default voice see TGCLAUDE_VOICE_ID in
 // lib/config.ts. Network errors propagate; non-2xx responses raise with
 // the API's error body included for debugging.
 //

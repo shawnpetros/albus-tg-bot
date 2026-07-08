@@ -92,7 +92,7 @@ export async function handleSlashCommand(
       deps.setUnlocked(next);
       await deps.sendMessage(
         wasUnlocked
-          ? "🔒 Locked. Read-only safe mode active. (Read, Grep, WebFetch, WebSearch, Honcho recall via mcp__honcho__search/chat/get_context - no Bash/Edit/Write, no memory writes.)"
+          ? "🔒 Locked. Read-only safe mode active. (Read, Grep, WebFetch, WebSearch - no Bash/Edit/Write, no memory writes.)"
           : "🔒 Already locked. Read-only mode."
       );
       return true;
@@ -170,12 +170,12 @@ export async function handleSlashCommand(
     }
     case "/help": {
       await deps.sendMessage(
-        "Jarvis bot commands:\n\n" +
+        "Bot commands:\n\n" +
           "🔒 / 🔓  mode switcher\n" +
           "/unlock - switch to full tools (Bash, Edit, Write, etc.). Replies will end with a \"still unlocked - /lock when done\" reminder.\n" +
           "/lock or /relock - switch back to read-only safe mode.\n\n" +
           "🧵  conversation\n" +
-          "/reset or /new - clear the Claude session, fresh thread (Honcho memory stays).\n" +
+          "/reset or /new - clear the Claude session, fresh thread (long-term memory, if attached, stays).\n" +
           "/session or /status - show current session id, mode, and stats (turns, context size, cost, age).\n" +
           "/compact - manually trigger a compaction pass on the current session.\n" +
           "/model - show the current model; `/model opus|sonnet|haiku` to switch, `/model default` to clear.\n" +

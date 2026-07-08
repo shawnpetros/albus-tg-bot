@@ -9,7 +9,7 @@ let sessionFile: string;
 let stateFile: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "albus-state-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "tgclaude-state-"));
   sessionFile = join(tmpDir, "session.json");
   stateFile = join(tmpDir, "state.json");
 });

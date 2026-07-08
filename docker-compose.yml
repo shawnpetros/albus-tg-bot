@@ -1,7 +1,7 @@
 # OrbStack / Docker Compose for sandboxed test runs and (optionally) a
 # parallel sandbox bot. Production deployment is still launchd-on-host;
 # this file exists so the test suite can run hermetically without
-# touching ~/.albus-tg-bot or the production Telegram bot.
+# touching ~/.tgclaude or the production Telegram bot.
 
 services:
   # `docker compose run --rm test` runs the full bun test suite in an

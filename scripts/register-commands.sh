@@ -5,19 +5,19 @@
 # Run this any time the command surface changes (add/remove/rename) or
 # rerun verbatim to refresh descriptions.
 #
-# Requires ALBUS_BOT_TOKEN in env (sourced from ~/.exports).
+# Requires TGCLAUDE_BOT_TOKEN in env.
 #
 # Source of truth for what's available is the slash-command router in
 # lib/slash.ts. Keep this list in sync with that router's canonical names.
 
 set -euo pipefail
 
-if [[ -z "${ALBUS_BOT_TOKEN:-}" ]]; then
-  echo "ALBUS_BOT_TOKEN not set. Source ~/.exports first." >&2
+if [[ -z "${TGCLAUDE_BOT_TOKEN:-}" ]]; then
+  echo "TGCLAUDE_BOT_TOKEN not set." >&2
   exit 1
 fi
 
-curl -sf -X POST "https://api.telegram.org/bot${ALBUS_BOT_TOKEN}/setMyCommands" \
+curl -sf -X POST "https://api.telegram.org/bot${TGCLAUDE_BOT_TOKEN}/setMyCommands" \
   -H "Content-Type: application/json" \
   -d '{
     "commands": [

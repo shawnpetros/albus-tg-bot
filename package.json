@@ -1,7 +1,7 @@
 {
-  "name": "albus-tg-bot",
+  "name": "tgclaude",
   "version": "0.1.0",
-  "description": "Telegram surface for Albus. Long-polls Telegram, spawns claude -p per message with Honcho MCP and Albus persona.",
+  "description": "Telegram your Claude Code. Long-polls Telegram, spawns claude -p per message with your MCP config and a pluggable persona.",
   "type": "module",
   "main": "bot.ts",
   "scripts": {

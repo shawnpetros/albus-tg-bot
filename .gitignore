@@ -7,7 +7,7 @@ bun.lockb
 .env.local
 
 # Per-host runtime config. Ship mcp-config.example.json for cloners;
-# the real one lives at ~/.config/albus/mcp-config.json (or ALBUS_MCP_CONFIG).
+# the real one lives at ~/.config/tgclaude/mcp-config.json (or TGCLAUDE_MCP_CONFIG).
 mcp-config.json
 
 # Host-specific launchd files. Cloners customize from .example.plist /
@@ -17,3 +17,9 @@ launchd/com.*.plist
 launchd/run.sh
 launchd/watchdog.sh
 !launchd/*.example.*
+
+# personal launchd install files (examples are committed)
+launchd/com.*.plist
+launchd/run.sh
+launchd/watchdog.sh
+!launchd/com.example.*.plist

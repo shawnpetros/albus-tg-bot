@@ -4,7 +4,7 @@
 //   1. Lock-state reminder. When unlocked, ALWAYS shown so the operator never
 //      forgets to /lock. This replaces the old persona-typed footer (the model
 //      used to append "🔓 still unlocked" itself, which was easy to forget).
-//   2. Cost/context telemetry. Gated by showMetrics (ALBUS_SHOW_TELEMETRY): the
+//   2. Cost/context telemetry. Gated by showMetrics (TGCLAUDE_SHOW_TELEMETRY): the
 //      context fill against the live window, plus per-pass, per-session, and
 //      per-day spend. Prep for the raw-API-cost era: you can't contain what you
 //      can't see.

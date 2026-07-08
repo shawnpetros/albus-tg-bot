@@ -20,7 +20,11 @@ describe("voice aside config", () => {
   test("quick timeout is a positive number", () => {
     expect(QUICK_TIMEOUT_MS).toBeGreaterThan(0);
   });
-  test("persona voice path ends with persona-voice.md", () => {
-    expect(PERSONA_VOICE_PATH.endsWith("persona-voice.md")).toBe(true);
+  test("persona voice path is the repo card or a local overlay", () => {
+    // The repo default, or persona-voice.local.md when the host has one.
+    expect(
+      PERSONA_VOICE_PATH.endsWith("persona-voice.md") ||
+        PERSONA_VOICE_PATH.endsWith("persona-voice.local.md")
+    ).toBe(true);
   });
 });
